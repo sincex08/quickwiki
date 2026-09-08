@@ -1,0 +1,22 @@
+{
+  "name": "quickwiki",
+  "version": "0.1.0",
+  "private": true,
+  "description": "QuickWiki - 本地优先笔记应用（Monorepo 根）",
+  "scripts": {
+    "dev": "pnpm --filter @quickwiki/web dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "icons": "node scripts/resize-icons.mjs",
+    "clean": "turbo run clean"
+  },
+  "devDependencies": {
+    "sharp": "^0.35.4",
+    "turbo": "^2.5.0"
+  },
+  "packageManager": "pnpm@10.34.5",
+  "engines": {
+    "node": ">=20.9.0"
+  }
+}

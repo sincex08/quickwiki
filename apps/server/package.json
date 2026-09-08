@@ -1,0 +1,6 @@
+{
+  "name": "@quickwiki/server",
+  "version": "0.0.0",
+  "private": true,
+  "description": "QuickWiki 后端服务占位包（Phase 2 云端同步时启用：Express + PostgreSQL）。与 @quickwiki/web 严格隔离，产物独立输出到本包目录。"
+}

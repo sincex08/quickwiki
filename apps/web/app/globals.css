@@ -1,0 +1,264 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 217.2 91.2% 59.8%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 217.2 91.2% 59.8%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    /* 深色主题采用深蓝灰（slate）色板，避免纯黑观感 */
+    --background: 222 47% 11%;
+    --foreground: 210 40% 98%;
+    --card: 222 47% 13%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222 47% 13%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 217.2 91.2% 59.8%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 217 33% 17%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 217 33% 20%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 215 25% 27%;
+    --input: 215 25% 27%;
+    --ring: 224.3 76.3% 48%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* ===== Tiptap 编辑器样式 ===== */
+.tiptap {
+  @apply outline-none min-h-full px-1 py-2 text-base leading-7;
+}
+
+.tiptap p.is-editor-empty:first-child::before {
+  @apply text-muted-foreground float-left h-0 pointer-events-none;
+  content: attr(data-placeholder);
+}
+
+.tiptap h1 {
+  @apply text-2xl font-bold mt-6 mb-2;
+}
+.tiptap h2 {
+  @apply text-xl font-bold mt-5 mb-2;
+}
+.tiptap h3 {
+  @apply text-lg font-semibold mt-4 mb-1.5;
+}
+.tiptap ul {
+  @apply list-disc pl-6 my-2;
+}
+.tiptap ol {
+  @apply list-decimal pl-6 my-2;
+}
+.tiptap li > p {
+  @apply my-0.5;
+}
+.tiptap blockquote {
+  @apply border-l-4 border-border pl-4 my-3 text-muted-foreground italic;
+}
+.tiptap code {
+  @apply bg-muted text-primary-foreground dark:bg-muted dark:text-foreground rounded px-1.5 py-0.5 text-[0.875em] font-mono;
+}
+.tiptap pre {
+  @apply bg-muted rounded-lg p-4 my-3 overflow-x-auto;
+}
+.tiptap pre code {
+  @apply bg-transparent p-0 text-sm;
+}
+.tiptap hr {
+  @apply border-border my-4;
+}
+.tiptap a {
+  @apply text-primary underline underline-offset-2;
+}
+
+/* 只读预览模式 */
+.tiptap.ProseMirror-focused {
+  @apply outline-none;
+}
+
+/* ===== 图片 ===== */
+.tiptap img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius);
+  margin: 0.5rem 0;
+}
+.tiptap img.ProseMirror-selectednode {
+  outline: 2px solid hsl(var(--primary));
+}
+
+/* ===== 任务清单 ===== */
+.tiptap ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0;
+  margin: 0.5rem 0;
+}
+.tiptap ul[data-type="taskList"] ul[data-type="taskList"] {
+  padding-left: 1.5rem;
+}
+.tiptap ul[data-type="taskList"] li {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+.tiptap ul[data-type="taskList"] li > label {
+  margin-top: 0.35rem;
+  user-select: none;
+  flex-shrink: 0;
+}
+.tiptap ul[data-type="taskList"] li > div {
+  flex: 1;
+  min-width: 0;
+}
+.tiptap ul[data-type="taskList"] input[type="checkbox"] {
+  cursor: pointer;
+  accent-color: hsl(var(--primary));
+  width: 1em;
+  height: 1em;
+}
+.tiptap ul[data-type="taskList"] li[data-checked="true"] > div {
+  color: hsl(var(--muted-foreground));
+  text-decoration: line-through;
+}
+
+/* ===== 表格 ===== */
+.tiptap .tableWrapper {
+  overflow-x: auto;
+  margin: 0.75rem 0;
+}
+.tiptap table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: 100%;
+  overflow: hidden;
+}
+.tiptap td,
+.tiptap th {
+  border: 1px solid hsl(var(--border));
+  padding: 0.4rem 0.6rem;
+  position: relative;
+  vertical-align: top;
+  text-align: left;
+  min-width: 4em;
+}
+.tiptap th {
+  background: hsl(var(--muted));
+  font-weight: 600;
+}
+.tiptap .selectedCell {
+  background: hsl(var(--accent));
+}
+.tiptap .column-resize-handle {
+  position: absolute;
+  right: -2px;
+  top: 0;
+  bottom: -2px;
+  width: 4px;
+  background: hsl(var(--primary));
+  pointer-events: none;
+}
+.tiptap.resize-cursor {
+  cursor: col-resize;
+}
+
+/* ===== 块级混合编辑（预览模式）渲染排版 ===== */
+.md-preview > div + div {
+  margin-top: 0.25rem;
+}
+.md-preview h1 {
+  @apply text-2xl font-bold mt-4 mb-2;
+}
+.md-preview h2 {
+  @apply text-xl font-bold mt-3 mb-2;
+}
+.md-preview h3 {
+  @apply text-lg font-semibold mt-3 mb-1.5;
+}
+.md-preview p {
+  @apply my-1.5 leading-7;
+}
+.md-preview ul {
+  @apply list-disc pl-6 my-1.5;
+}
+.md-preview ol {
+  @apply list-decimal pl-6 my-1.5;
+}
+.md-preview ul.contains-task-list {
+  @apply list-none pl-1;
+}
+.md-preview ul.contains-task-list li {
+  @apply flex items-start gap-2;
+}
+.md-preview ul.contains-task-list input[type="checkbox"] {
+  @apply mt-1.5;
+  accent-color: hsl(var(--primary));
+  pointer-events: none; /* 勾选请点块编辑源码 */
+}
+.md-preview blockquote {
+  @apply border-l-4 border-border pl-4 my-2 text-muted-foreground italic;
+}
+.md-preview code {
+  @apply bg-muted rounded px-1.5 py-0.5 text-[0.875em] font-mono;
+}
+.md-preview pre {
+  @apply bg-muted rounded-lg p-4 my-2 overflow-x-auto;
+}
+.md-preview pre code {
+  @apply bg-transparent p-0 text-sm;
+}
+.md-preview table {
+  @apply border-collapse w-full my-2;
+}
+.md-preview th,
+.md-preview td {
+  border: 1px solid hsl(var(--border));
+  @apply px-2.5 py-1.5 text-left align-top;
+}
+.md-preview th {
+  background: hsl(var(--muted));
+  @apply font-semibold;
+}
+.md-preview hr {
+  @apply border-border my-3;
+}
+.md-preview a {
+  @apply text-primary underline underline-offset-2;
+}
+.md-preview img {
+  @apply max-w-full h-auto rounded-md my-2;
+}

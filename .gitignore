@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build outputs (isolated per app/package)
+.next/
+out/
+dist/
+build/
+.turbo/
+
+# Env
+.env
+.env.*
+!.env.example
+
+# 本地 npm 源覆盖（勿提交：海外 CI 用默认源更快）
+.npmrc
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# Tauri (Phase 3)
+packages/desktop/src-tauri/target/
+
+# Generated scratch images
+vibe_images/

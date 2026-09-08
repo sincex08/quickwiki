@@ -1,0 +1,183 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  notebookRepo,
+  noteRepo,
+  tagRepo,
+} from "@/lib/data/repository";
+import { subscribe } from "@/lib/events";
+import type {
+  ListFilters,
+  Note,
+  Notebook,
+  Paginated,
+  Tag,
+} from "@quickwiki/shared";
+import { DEFAULT_PAGE_SIZE } from "@quickwiki/shared";
+
+export interface NotesFilters {
+  notebookId?: string | null;
+  tag?: string | null;
+}
+
+export function useNotebooks() {
+  const [notebooks, setNotebooks] = useState<Notebook[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    const load = () => {
+      notebookRepo.list().then((list) => {
+        if (!active) return;
+        setNotebooks(list);
+        setLoading(false);
+      });
+    };
+    load();
+    const unsub = subscribe("notebooks", load);
+    return () => {
+      active = false;
+      unsub();
+    };
+  }, []);
+
+  return { notebooks, loading };
+}
+
+/**
+ * 笔记列表（置顶优先 + 分页加载更多）。
+ * 订阅 notes 变更事件，任何 CRUD/自动保存后自动刷新。
+ */
+export function useNotes(filters: NotesFilters) {
+  const [limit, setLimit] = useState(DEFAULT_PAGE_SIZE);
+  const [result, setResult] = useState<Paginated<Note>>({
+    items: [],
+    total: 0,
+    hasMore: false,
+  });
+  const [loading, setLoading] = useState(true);
+
+  const filtersKey = `${filters.notebookId ?? ""}|${filters.tag ?? ""}`;
+
+  // 切换过滤器时重置分页
+  useEffect(() => {
+    setLimit(DEFAULT_PAGE_SIZE);
+  }, [filtersKey]);
+
+  useEffect(() => {
+    let active = true;
+    const load = () => {
+      const query: ListFilters = { limit };
+      if (filters.notebookId) query.notebookId = filters.notebookId;
+      if (filters.tag) query.tag = filters.tag;
+      noteRepo.list(query).then((res) => {
+        if (!active) return;
+        setResult(res);
+        setLoading(false);
+      });
+    };
+    load();
+    const unsub = subscribe("notes", load);
+    return () => {
+      active = false;
+      unsub();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtersKey, limit]);
+
+  const loadMore = useCallback(() => {
+    setLimit((l) => l + DEFAULT_PAGE_SIZE);
+  }, []);
+
+  return { ...result, loading, loadMore };
+}
+
+export function useNote(id: string | null) {
+  const [note, setNote] = useState<Note | null>(null);
+  const [loading, setLoading] = useState(false);
+  /** 当前 id 的加载是否已完成（区分「加载中」与「确认不存在」） */
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    if (!id) {
+      setNote(null);
+      setLoading(false);
+      setLoaded(false);
+      return;
+    }
+    let active = true;
+    setLoading(true);
+    setLoaded(false);
+    const load = () => {
+      noteRepo.findById(id).then((n) => {
+        if (!active) return;
+        setNote(n);
+        setLoading(false);
+        setLoaded(true);
+      });
+    };
+    load();
+    const unsub = subscribe("notes", load);
+    return () => {
+      active = false;
+      unsub();
+    };
+  }, [id]);
+
+  return { note, loading, loaded };
+}
+
+export function useTags() {
+  const [tags, setTags] = useState<Tag[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    const load = () => {
+      tagRepo.list().then((list) => {
+        if (active) setTags(list);
+      });
+    };
+    load();
+    const unsubTags = subscribe("tags", load);
+    const unsubNotes = subscribe("notes", load);
+    return () => {
+      active = false;
+      unsubTags();
+      unsubNotes();
+    };
+  }, []);
+
+  return { tags };
+}
+
+export interface NoteCountsResult {
+  all: number;
+  byNotebook: Record<string, number>;
+}
+
+export function useNoteCounts() {
+  const [counts, setCounts] = useState<NoteCountsResult>({
+    all: 0,
+    byNotebook: {},
+  });
+
+  useEffect(() => {
+    let active = true;
+    const load = () => {
+      noteRepo.counts().then((c) => {
+        if (active) setCounts(c);
+      });
+    };
+    load();
+    const unsubNotes = subscribe("notes", load);
+    const unsubNotebooks = subscribe("notebooks", load);
+    return () => {
+      active = false;
+      unsubNotes();
+      unsubNotebooks();
+    };
+  }, []);
+
+  return counts;
+}
