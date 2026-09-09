@@ -1,0 +1,28 @@
+# Supabase 免费项目保活：每日 ping 一次 REST 接口，防止 7 天不活跃被暂停。
+# 使用前需在仓库 Settings → Secrets and variables → Actions 添加：
+#   SUPABASE_URL      （如 https://xxxx.supabase.co）
+#   SUPABASE_ANON_KEY （anon 公钥）
+# 匿名请求受 RLS 保护（返回空集），仅用于产生 API 活动重置暂停计时。
+# 注意：GitHub 对 60 天无动态的仓库可能自动停用定时工作流，届时在本页手动 Run workflow 一次即可恢复。
+
+name: Supabase Keepalive
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # UTC 3:00 = 新加坡 11:00，每日一次
+  workflow_dispatch: # 支持手动触发
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase REST
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" \
+            "$SUPABASE_URL/rest/v1/notes?select=id&limit=1" \
+            -H "apikey: $SUPABASE_ANON_KEY")
+          echo "Supabase REST ping -> HTTP $code"
+          test "$code" = "200"

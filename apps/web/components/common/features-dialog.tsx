@@ -96,6 +96,7 @@ const FEATURE_GROUPS: FeatureGroup[] = [
       "同步触发：保存后自动（5 秒防抖）/ 头部刷新按钮手动 / 恢复联网时",
       "离线优先：断网继续写本地，恢复后按队列补推；删除以墓碑同步",
       "冲突按最后写入胜出；图片自动上传云存储并改写引用",
+      "免费版保活：仓库内置 GitHub Actions 每日打卡（配置 Secrets 即生效），防 7 天不活跃被暂停",
       "未配置时头部不显示同步入口；配置见仓库 supabase/schema.sql 与 apps/web/.env.example",
     ],
   },
@@ -186,6 +187,9 @@ export function FeaturesDialog({ open, onOpenChange }: FeaturesDialogProps) {
             </ol>
             <p className="mt-1.5 text-[11px] text-muted-foreground">
               完成后页面顶部会出现「登录同步」入口，登录即可开始多设备同步。
+              可选加固：在 GitHub 仓库 Settings → Secrets 配置 SUPABASE_URL 与
+              SUPABASE_ANON_KEY，仓库自带的每日保活工作流会自动打卡，防止免费项目
+              7 天不活跃被暂停。
             </p>
           </section>
         ) : (

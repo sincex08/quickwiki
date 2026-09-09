@@ -40,6 +40,16 @@
 - 第二台设备拉取的图片为远程 URL，离线查看依赖浏览器/Service Worker 缓存
 - 未做 Realtime 订阅（多设备实时推送），当前靠触发器同步
 
+### 免费版防暂停保活（已内置）
+
+- Supabase 免费项目 **7 天无 API 请求会自动暂停**；打开应用即产生活动（同步），
+  长期不开应用则由仓库内置的 `.github/workflows/keepalive.yml`
+  每日（UTC 3:00 = 新加坡 11:00）匿名 ping 一次 REST 接口，重置暂停计时
+- 启用：仓库 Settings → Secrets and variables → Actions 添加 `SUPABASE_URL` 与
+  `SUPABASE_ANON_KEY` 两个 Secret 即自动生效（匿名请求受 RLS 保护，仅返回空集）
+- 注意：GitHub 会对 60 天无动态的仓库自动停用定时工作流，届时到 Actions 页面手动
+  Run workflow 一次即可；若项目已被暂停，在 Supabase 控制台点 Restore 恢复
+
 ### 备选：自建服务端（后续）
 
 若需要服务端业务逻辑（分享链接、协作、全文检索服务等），启用 `apps/server`
