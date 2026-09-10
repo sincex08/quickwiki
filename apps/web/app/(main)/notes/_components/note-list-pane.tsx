@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Plus, X } from "lucide-react";
+import { AlignJustify, Plus, X } from "lucide-react";
 import type { Note } from "@quickwiki/shared";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -13,6 +13,30 @@ import { useNoteActions } from "@/hooks/use-note-actions";
 import { useUIStore } from "@/stores/use-ui-store";
 import { getSearchManager } from "@/lib/search/search-manager";
 import { noteRepo } from "@/lib/data/repository";
+import { cn } from "@/lib/utils";
+
+/** 列表底部「仅标题」切换：开启后卡片只显示标题，列表栏随之收窄 */
+function TitleOnlyToggle() {
+  const titleOnly = useUIStore((s) => s.noteListTitleOnly);
+  const setTitleOnly = useUIStore((s) => s.setNoteListTitleOnly);
+
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      className={cn(
+        "h-6 gap-1 px-1.5 text-xs text-muted-foreground",
+        titleOnly && "bg-accent text-accent-foreground"
+      )}
+      onClick={() => setTitleOnly(!titleOnly)}
+      aria-pressed={titleOnly}
+      title={titleOnly ? "当前仅显示标题，点击恢复摘要视图" : "仅显示标题（列表栏更窄）"}
+    >
+      <AlignJustify className="h-3.5 w-3.5" />
+      仅标题
+    </Button>
+  );
+}
 
 /** 当前过滤条件提示（可清除） */
 function FilterChips() {
@@ -105,6 +129,7 @@ export function NoteListPane() {
   const isSearching = searchQuery.trim().length > 0;
   const notes = isSearching ? searchResults ?? [] : items;
   const listLoading = isSearching ? searching : loading;
+  const titleOnly = useUIStore((s) => s.noteListTitleOnly);
 
   // ===== 删除确认 =====
   const [pendingDelete, setPendingDelete] = useState<Note | null>(null);
@@ -152,6 +177,7 @@ export function NoteListPane() {
             hasMore={!isSearching && hasMore}
             onLoadMore={loadMore}
             activeNoteId={activeNoteId}
+            compact={titleOnly}
             onSelect={(id) => openNote(id)}
             onTogglePin={togglePin}
             onRequestDelete={setPendingDelete}
@@ -159,10 +185,11 @@ export function NoteListPane() {
         )}
       </div>
 
-      {/* 列表底部统计（非搜索模式） */}
+      {/* 列表底部统计（非搜索模式）+ 仅标题切换 */}
       {!isSearching && total > 0 && (
-        <div className="border-t px-3 py-1.5 text-xs text-muted-foreground">
-          共 {total} 篇笔记
+        <div className="flex items-center justify-between border-t px-3 py-1.5 text-xs text-muted-foreground">
+          <span>共 {total} 篇笔记</span>
+          <TitleOnlyToggle />
         </div>
       )}
 

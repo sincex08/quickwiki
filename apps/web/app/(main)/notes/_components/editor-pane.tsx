@@ -68,10 +68,19 @@ export function EditorPane() {
   const debouncedSave = useMemo(
     () =>
       debounce((id: string, content: string) => {
-        pendingRef.current = null;
         noteRepo
           .update(id, { content, title: computeTitle(content) })
-          .then(() => setSaveState("saved"));
+          .then(() => {
+            // 落盘完成后才清除暂存：若落盘前清除，事件回读期间 latestContent
+            // 会回退到旧值，导致源码视图光标被重置到文末
+            if (
+              pendingRef.current?.id === id &&
+              pendingRef.current?.content === content
+            ) {
+              pendingRef.current = null;
+            }
+            setSaveState("saved");
+          });
       }, AUTOSAVE_DEBOUNCE_MS),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     []
@@ -335,7 +344,8 @@ export function EditorPane() {
         />
       ) : editorMode === "source" ? (
         <div className="min-h-0 flex-1">
-          <MarkdownSource value={latestContent} onChange={handleChange} />
+          {/* key 确保切换笔记时重挂载，采用新笔记内容作为初始值 */}
+          <MarkdownSource key={note.id} value={latestContent} onChange={handleChange} />
         </div>
       ) : (
         <LazyEditor

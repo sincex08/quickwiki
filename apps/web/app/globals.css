@@ -91,7 +91,7 @@
   @apply border-l-4 border-border pl-4 my-3 text-muted-foreground italic;
 }
 .tiptap code {
-  @apply bg-muted text-primary-foreground dark:bg-muted dark:text-foreground rounded px-1.5 py-0.5 text-[0.875em] font-mono;
+  @apply bg-muted text-foreground rounded px-1.5 py-0.5 text-[0.875em] font-mono;
 }
 .tiptap pre {
   @apply bg-muted rounded-lg p-4 my-3 overflow-x-auto;

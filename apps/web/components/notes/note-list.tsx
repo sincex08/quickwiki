@@ -9,6 +9,8 @@ interface NoteListProps {
   hasMore: boolean;
   onLoadMore: () => void;
   activeNoteId: string | null;
+  /** 紧凑模式：卡片只展示标题 */
+  compact?: boolean;
   onSelect: (id: string) => void;
   onTogglePin: (id: string, pinned: boolean) => void;
   onRequestDelete: (note: Note) => void;
@@ -20,6 +22,7 @@ export function NoteList({
   hasMore,
   onLoadMore,
   activeNoteId,
+  compact = false,
   onSelect,
   onTogglePin,
   onRequestDelete,
@@ -45,6 +48,7 @@ export function NoteList({
           key={note.id}
           note={note}
           active={note.id === activeNoteId}
+          compact={compact}
           onSelect={() => onSelect(note.id)}
           onTogglePin={() => onTogglePin(note.id, note.pinned)}
           onDelete={() => onRequestDelete(note)}

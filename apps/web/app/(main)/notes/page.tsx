@@ -46,13 +46,15 @@ function NoteUrlSync() {
 
 function NotesLayout() {
   const activeNoteId = useUIStore((s) => s.activeNoteId);
+  const noteListTitleOnly = useUIStore((s) => s.noteListTitleOnly);
 
   return (
     <div className="flex h-full min-h-0">
-      {/* 笔记列表栏：移动端在打开笔记时隐藏，桌面端始终显示 */}
+      {/* 笔记列表栏：移动端在打开笔记时隐藏，桌面端始终显示；仅标题模式下收窄 */}
       <div
         className={cn(
-          "w-full flex-col border-r md:flex md:w-80 lg:w-96",
+          "w-full flex-col border-r md:flex",
+          noteListTitleOnly ? "md:w-56 lg:w-64" : "md:w-80 lg:w-96",
           activeNoteId ? "hidden md:flex" : "flex"
         )}
       >

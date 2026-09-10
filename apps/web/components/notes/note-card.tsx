@@ -11,6 +11,8 @@ import { TagBadge } from "@/components/common/tag-badge";
 interface NoteCardProps {
   note: Note;
   active: boolean;
+  /** 紧凑模式：只展示标题（列表栏收窄时使用） */
+  compact?: boolean;
   onSelect: () => void;
   onTogglePin: () => void;
   onDelete: () => void;
@@ -22,6 +24,7 @@ const SWIPE_REVEAL = 96;
 export function NoteCard({
   note,
   active,
+  compact = false,
   onSelect,
   onTogglePin,
   onDelete,
@@ -32,7 +35,7 @@ export function NoteCard({
   const dragging = useRef(false);
   const moved = useRef(false);
 
-  const snippet = markdownToText(note.content).slice(0, 100);
+  const snippet = compact ? "" : markdownToText(note.content).slice(0, 100);
 
   const handleTouchStart = (e: React.TouchEvent) => {
     startX.current = e.touches[0].clientX;
@@ -110,6 +113,7 @@ export function NoteCard({
         onTouchEnd={handleTouchEnd}
         className={cn(
           "relative cursor-pointer select-none rounded-lg border bg-card p-3 text-left transition-all hover:border-primary/40",
+          compact && "px-3 py-2",
           active && "border-primary ring-1 ring-primary/30"
         )}
         style={{
@@ -130,17 +134,19 @@ export function NoteCard({
             {snippet}
           </p>
         )}
-        <div className="mt-2 flex flex-wrap items-center gap-1.5">
-          <time className="text-[11px] text-muted-foreground">
-            {formatDistanceToNowStrict(note.updatedAt, {
-              locale: zhCN,
-              addSuffix: true,
-            })}
-          </time>
-          {note.tags.slice(0, 3).map((tag) => (
-            <TagBadge key={tag} tag={tag} />
-          ))}
-        </div>
+        {!compact && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <time className="text-[11px] text-muted-foreground">
+              {formatDistanceToNowStrict(note.updatedAt, {
+                locale: zhCN,
+                addSuffix: true,
+              })}
+            </time>
+            {note.tags.slice(0, 3).map((tag) => (
+              <TagBadge key={tag} tag={tag} />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

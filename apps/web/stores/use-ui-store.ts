@@ -4,6 +4,7 @@ import { create } from "zustand";
 export type EditorMode = "edit" | "source" | "preview";
 
 const HYBRID_STORAGE_KEY = "quickwiki.hybridEditing";
+const LIST_TITLE_ONLY_KEY = "quickwiki.noteListTitleOnly";
 
 function readHybridDefault(): boolean {
   if (typeof window === "undefined") return true;
@@ -11,6 +12,15 @@ function readHybridDefault(): boolean {
     return window.localStorage.getItem(HYBRID_STORAGE_KEY) !== "0";
   } catch {
     return true;
+  }
+}
+
+function readListTitleOnlyDefault(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(LIST_TITLE_ONLY_KEY) === "1";
+  } catch {
+    return false;
   }
 }
 
@@ -33,6 +43,8 @@ interface UIState {
   editorMode: EditorMode;
   /** 预览模式是否开启「点击块编辑」（头部开关控制，持久化） */
   hybridEditing: boolean;
+  /** 笔记列表是否只展示标题（紧凑模式，中栏更窄，持久化） */
+  noteListTitleOnly: boolean;
 
   setNotebookFilter: (id: string | null) => void;
   setTagFilter: (tag: string | null) => void;
@@ -41,6 +53,7 @@ interface UIState {
   setSidebarOpen: (open: boolean) => void;
   setEditorMode: (mode: EditorMode) => void;
   setHybridEditing: (on: boolean) => void;
+  setNoteListTitleOnly: (on: boolean) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -51,6 +64,7 @@ export const useUIStore = create<UIState>((set) => ({
   sidebarOpen: false,
   editorMode: "edit",
   hybridEditing: readHybridDefault(),
+  noteListTitleOnly: readListTitleOnlyDefault(),
 
   setNotebookFilter: (id) => set({ notebookFilter: id, tagFilter: null }),
   setTagFilter: (tag) => set({ tagFilter: tag }),
@@ -65,5 +79,13 @@ export const useUIStore = create<UIState>((set) => ({
       // 忽略隐私模式等存储失败
     }
     set({ hybridEditing: on });
+  },
+  setNoteListTitleOnly: (on) => {
+    try {
+      window.localStorage.setItem(LIST_TITLE_ONLY_KEY, on ? "1" : "0");
+    } catch {
+      // 忽略隐私模式等存储失败
+    }
+    set({ noteListTitleOnly: on });
   },
 }));
