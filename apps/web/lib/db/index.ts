@@ -2,6 +2,20 @@ import Dexie, { type Table } from "dexie";
 import type { Note, Notebook, Tag, NoteTag } from "@quickwiki/shared";
 import { DB_NAME } from "@quickwiki/shared";
 
+/** 登录用户标记（sync-engine 在登录/退出时写入，见 AUTH_UID_KEY） */
+const AUTH_UID_KEY = "quickwiki.uid";
+
+/** 已登录 → 按用户分库（数据隔离）；未登录 → 占位库名（登录门禁挡住不会访问） */
+function resolveDbName(): string {
+  try {
+    const uid =
+      typeof window !== "undefined" ? localStorage.getItem(AUTH_UID_KEY) : null;
+    return uid ? `${DB_NAME}:${uid}` : DB_NAME;
+  } catch {
+    return DB_NAME;
+  }
+}
+
 /** 键值元数据表（搜索索引持久化等） */
 export interface MetaEntry {
   key: string;
@@ -15,6 +29,8 @@ export interface OutboxEntry {
   entityId: string;
   deleted: boolean;
   queuedAt: number;
+  /** 连续推送失败次数（仅统计用途，非索引字段，无需升库版本） */
+  attempts?: number;
 }
 
 /**
@@ -26,7 +42,7 @@ export interface OutboxEntry {
  * - meta 表用于持久化搜索索引（MiniSearch.toJSON）与同步水位。
  * - outbox 表为云同步出站队列（Supabase 验证阶段）。
  */
-export const db = new Dexie(DB_NAME) as Dexie & {
+export const db = new Dexie(resolveDbName()) as Dexie & {
   notes: Table<Note, string>;
   notebooks: Table<Notebook, string>;
   tags: Table<Tag, string>;

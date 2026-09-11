@@ -43,9 +43,6 @@ export default function LoginPage() {
             </code>
             （模板见 .env.example），重启 dev 服务器后回到本页。
           </p>
-          <Button className="mt-4" variant="outline" onClick={() => router.push("/notes")}>
-            返回本地使用
-          </Button>
         </div>
       </main>
     );
@@ -67,8 +64,16 @@ export default function LoginPage() {
       } else {
         const { data, error: err } = await sb.auth.signUp({ email, password });
         if (err) throw err;
+        // 已注册邮箱：Supabase 防枚举不报错，返回 session=null 且 identities=[] 的混淆用户
+        if (!data.session && data.user && (data.user.identities?.length ?? 0) === 0) {
+          setNotice("该邮箱已注册，请直接登录：支持邮箱密码、邮箱链接或 GitHub。");
+          setMode("signin");
+          return;
+        }
         if (!data.session) {
-          setNotice("注册成功：请查收确认邮件，验证后再登录。");
+          setNotice(
+            "注册成功：请查收确认邮件，验证后再登录。登录后可在右上角「账号管理」补充密码或绑定 GitHub。"
+          );
         }
       }
     } catch (err) {
@@ -124,7 +129,7 @@ export default function LoginPage() {
     }
   };
 
-  const oauth = async (provider: "google" | "github") => {
+  const oauth = async (provider: "github") => {
     const sb = getSupabase();
     if (!sb) return;
     setError(null);
@@ -142,9 +147,9 @@ export default function LoginPage() {
         className="w-full max-w-md space-y-4 rounded-lg border bg-card p-6"
       >
         <div>
-          <h1 className="text-lg font-semibold">登录以启用云同步</h1>
+          <h1 className="text-lg font-semibold">登录后开始使用</h1>
           <p className="mt-1 text-xs text-muted-foreground">
-            数据仍优先保存在本地；登录后自动在多设备间同步。
+            笔记按账号隔离存储；登录后自动在多设备间同步。
           </p>
         </div>
 
@@ -210,28 +215,17 @@ export default function LoginPage() {
         </div>
 
         {/* 第三方登录 */}
-        <div className="grid grid-cols-2 gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            disabled={busy}
-            onClick={() => void oauth("google")}
-            title="使用 Google 账号登录"
-          >
-            Google
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            className="gap-2"
-            disabled={busy}
-            onClick={() => void oauth("github")}
-            title="使用 GitHub 账号登录"
-          >
-            <Github className="h-4 w-4" />
-            GitHub
-          </Button>
-        </div>
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full gap-2"
+          disabled={busy}
+          onClick={() => void oauth("github")}
+          title="使用 GitHub 账号登录"
+        >
+          <Github className="h-4 w-4" />
+          GitHub
+        </Button>
 
         <button
           type="button"
@@ -243,14 +237,6 @@ export default function LoginPage() {
           }}
         >
           {mode === "signin" ? "没有账号？注册" : "已有账号？登录"}
-        </button>
-
-        <button
-          type="button"
-          className="w-full text-center text-xs text-muted-foreground hover:text-foreground"
-          onClick={() => router.push("/notes")}
-        >
-          暂不同步，返回本地使用
         </button>
       </form>
     </main>

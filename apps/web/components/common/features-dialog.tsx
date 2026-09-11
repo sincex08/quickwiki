@@ -22,7 +22,7 @@ import { isSupabaseConfigured } from "@/lib/supabase/client";
  * 功能清单面板（帮助文档）。
  * 约定：新增/修改/移除用户可见功能时，必须在同一次改动里同步本文件；
  * 只写已实现的功能与真实位置，不写计划中的功能。
- * 最近更新：2026-09-08（含 Supabase 云同步验证版）
+ * 最近更新：2026-09-11（强制登录 + 本地数据按账号分库隔离）
  */
 
 interface FeatureGroup {
@@ -91,8 +91,10 @@ const FEATURE_GROUPS: FeatureGroup[] = [
     icon: <Cloud className="h-4 w-4" />,
     title: "云同步（Supabase · 验证中）",
     items: [
-      "可选登录：不登录完全本地可用；登录后多设备自动同步",
-      "登录方式：邮箱密码 / Magic Link 免密链接（含 6 位验证码兜底）/ Google / GitHub",
+      "登录后使用：未登录只能看到登录页；本地 IndexedDB 按账号分库隔离存储",
+      "登录方式：邮箱密码 / Magic Link 免密链接（含 6 位验证码兜底）/ GitHub",
+      "同一邮箱只对应一个账号：重复「注册」会提示已注册，改用登录即可",
+      "账号管理（右上角头像菜单 → 账号管理）：查看登录方式、补设/修改密码、绑定 GitHub",
       "同步触发：保存后自动（5 秒防抖）/ 头部刷新按钮手动 / 恢复联网时",
       "离线优先：断网继续写本地，恢复后按队列补推；删除以墓碑同步",
       "冲突按最后写入胜出；图片自动上传云存储并改写引用",
@@ -145,7 +147,7 @@ export function FeaturesDialog({ open, onOpenChange }: FeaturesDialogProps) {
         <DialogHeader>
           <DialogTitle>QuickWiki 功能清单</DialogTitle>
           <p className="text-xs text-muted-foreground">
-            本地优先的 Markdown 笔记 · 数据存储在浏览器，可完整导出 · 更新于 2026-09-08
+            本地优先的 Markdown 笔记 · 数据存储在浏览器，可完整导出 · 更新于 2026-09-11
           </p>
         </DialogHeader>
 
@@ -177,12 +179,13 @@ export function FeaturesDialog({ open, onOpenChange }: FeaturesDialogProps) {
               </li>
               <li>
                 在 Auth → Providers 中确认登录方式：Email 默认已开（Magic
-                Link / 验证码走它）；要用 Google / GitHub 登录需启用并填入各自的
+                Link / 验证码走它）；要用 GitHub 登录需启用并填入
                 Client ID / Secret；Redirect URLs 需包含你的访问地址（如
                 <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
                   http://localhost:3000/login
                 </code>
-                ）
+                ）；如需在「账号管理」内直接绑定 GitHub，还需在 Auth →
+                Sign In / Providers 开启 Manual Linking
               </li>
             </ol>
             <p className="mt-1.5 text-[11px] text-muted-foreground">

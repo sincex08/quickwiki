@@ -3,10 +3,10 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+  CircleUserRound,
   Download,
   HelpCircle,
   LogIn,
-  LogOut,
   Moon,
   Plus,
   RefreshCw,
@@ -19,6 +19,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { FeaturesDialog } from "@/components/common/features-dialog";
@@ -94,7 +96,7 @@ function SearchBox() {
   );
 }
 
-/** 云同步状态芯片：未配置隐藏；未登录显示入口；已登录显示状态/立即同步/退出 */
+/** 云同步状态芯片：未配置隐藏；未登录显示登录入口；已登录显示同步状态 + 账号菜单 */
 function SyncChip() {
   const router = useRouter();
   const [sync, setSync] = useState<SyncState>(() => getSyncState());
@@ -118,14 +120,14 @@ function SyncChip() {
     );
   }
 
-  const statusTitle =
+  const statusText =
     sync.status === "syncing"
       ? "正在同步…"
       : sync.status === "error"
-        ? `同步失败：${sync.error ?? "未知错误"} · 点击重试`
+        ? `同步失败：${sync.error ?? "未知错误"}`
         : sync.lastSyncAt
-          ? `已同步（${new Date(sync.lastSyncAt).toLocaleTimeString()}）· 点击立即同步`
-          : "点击立即同步";
+          ? `已同步（${new Date(sync.lastSyncAt).toLocaleTimeString()}）`
+          : "尚未同步";
 
   const signOut = async () => {
     await getSupabase()?.auth.signOut();
@@ -136,7 +138,7 @@ function SyncChip() {
       <Button
         variant="ghost"
         size="icon"
-        title={statusTitle}
+        title={`${statusText} · 点击立即同步`}
         aria-label="云同步状态"
         disabled={sync.status === "syncing"}
         onClick={() => void syncNow()}
@@ -149,15 +151,46 @@ function SyncChip() {
           )}
         />
       </Button>
-      <Button
-        variant="ghost"
-        size="icon"
-        title={`退出登录（${sync.userEmail ?? ""}）`}
-        aria-label="退出登录"
-        onClick={() => void signOut()}
-      >
-        <LogOut className="h-4 w-4" />
-      </Button>
+
+      {/* 账号模块：下拉含账号管理 / 立即同步 / 退出登录 */}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-1.5"
+            title={`账号：${sync.userEmail ?? ""}`}
+            aria-label="账号菜单"
+          >
+            <CircleUserRound className="h-4 w-4" />
+            <span className="hidden max-w-32 truncate lg:inline">
+              {sync.userEmail}
+            </span>
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="min-w-44">
+          <DropdownMenuLabel>
+            <div className="truncate">{sync.userEmail}</div>
+            <div className="text-xs font-normal text-muted-foreground">
+              {statusText}
+            </div>
+          </DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onClick={() => router.push("/account")}>
+            账号管理
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={sync.status === "syncing"}
+            onClick={() => void syncNow()}
+          >
+            立即同步
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onClick={() => void signOut()}>
+            退出登录
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   );
 }

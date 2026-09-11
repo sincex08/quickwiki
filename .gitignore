@@ -37,3 +37,7 @@ packages/desktop/src-tauri/target/
 
 # Generated scratch images
 vibe_images/
+
+# AI assistant local data
+.workbuddy/
+.zcode/

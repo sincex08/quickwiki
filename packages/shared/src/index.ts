@@ -22,6 +22,12 @@ export interface Note {
   createdAt: number;
   updatedAt: number;
   pinned: boolean;
+  /**
+   * 云同步乐观锁版本：本地最后一次已知的云端 version 值。
+   * null/undefined 表示从未与云端核对过（新创建或旧版本数据），
+   * 由 sync-engine 在 pull/成功 push 后写回；本地编辑不修改此字段。
+   */
+  syncVersion?: number;
 }
 
 /** 笔记本 */
@@ -32,6 +38,8 @@ export interface Notebook {
   color: string;
   createdAt: number;
   updatedAt: number;
+  /** 云同步乐观锁版本，语义同 Note.syncVersion */
+  syncVersion?: number;
 }
 
 /** 标签（去重后的字典表） */

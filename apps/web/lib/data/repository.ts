@@ -256,13 +256,29 @@ class IndexedDBNotebookRepository implements NotebookRepository {
   }
 
   async delete(id: string): Promise<void> {
+    let affectedIds: string[] = [];
+    const movedAt = Date.now();
     await db.transaction("rw", db.notebooks, db.notes, async () => {
-      // 删除笔记本时保留笔记，仅移出分类
-      await db.notes.where("notebookId").equals(id).modify({ notebookId: null });
+      // 删除笔记本时保留笔记，仅移出分类。
+      // 注意：必须同时刷新 updatedAt 并以真实 ids 发出变更事件，
+      // 否则这些笔记不会进入同步队列，其他设备会残留指向已删除笔记本的分类。
+      affectedIds = (await db.notes
+        .where("notebookId")
+        .equals(id)
+        .primaryKeys()) as string[];
+      await db.notes
+        .where("notebookId")
+        .equals(id)
+        .modify((note) => {
+          note.notebookId = null;
+          note.updatedAt = movedAt;
+        });
       await db.notebooks.delete(id);
     });
     emitChange("notebooks", { type: "delete", ids: [id] });
-    emitChange("notes", { type: "update", ids: [] });
+    if (affectedIds.length > 0) {
+      emitChange("notes", { type: "update", ids: affectedIds });
+    }
   }
 
   async findById(id: string): Promise<Notebook | null> {
