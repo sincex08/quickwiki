@@ -1,7 +1,7 @@
 -- ============================================================
 -- QuickWiki 云端同步 · Supabase Schema
 -- 在 Supabase 控制台 SQL Editor 中整体执行一次即可。
--- 已部署旧版 schema 的存量库请改执行 migration-sync-hardening.sql。
+-- 已部署旧版 schema 的存量库请改执行 migrations/2026-09-11-sync-hardening.sql。
 -- 设计要点：
 --   * uuid 主键复用客户端本地生成的 ID（crypto.randomUUID），无映射成本
 --   * updated_at 由客户端写入（编辑时间元数据），服务端不覆盖

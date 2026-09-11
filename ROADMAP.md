@@ -7,38 +7,39 @@
 - **能力**：三模式 Markdown 编辑（所见即所得/源码/预览）、图片压缩内嵌、表格/任务清单/链接、中文全文搜索（增量索引+持久化）、笔记本/标签/置顶、MD 与 ZIP 导出、PWA 离线、深色模式、响应式
 - **架构保障**：所有数据访问经由 `NoteRepository` / `NotebookRepository` 抽象层（`apps/web/lib/data/repository.ts`），UI 不直接依赖 Dexie —— 这是后续上云的切换点
 
-## Phase 2：云端同步（多设备）—— Supabase 验证中 🚧
+## Phase 2：云端同步（多设备）—— Supabase 已上线 ✅
 
-> 验证路线（2026-09-08 定）：前端直连 Supabase（新加坡区域），不建 BFF；
+> 路线（2026-09-08 定）：前端直连 Supabase（新加坡区域），不建 BFF；
 > 自建 Express + PostgreSQL 方案保留为后续备选（需要服务端业务逻辑时再启用）。
 
-### 已实现（验证阶段）
+### 已实现
 
 | 模块 | 实现 | 位置 |
 |------|------|------|
-| 表结构 + RLS + 存储桶 | `profiles` / `notebooks` / `notes`（uuid 主键复用本地 ID、`tags text[]`、`deleted_at` 墓碑、`updated_at` 客户端写入）+ 行级安全 + `note-images` 桶 | `supabase/schema.sql` |
+| 表结构 + RLS + 存储桶 | `profiles` / `notebooks` / `notes`（uuid 主键复用本地 ID、`tags text[]`、`deleted_at` 墓碑、`updated_at` 客户端写入、`server_updated_at`/`version` 服务端触发器维护）+ 行级安全 + `note-images` 桶 | `supabase/schema.sql` |
+| 存量库迁移 | 2026-09-11 同步加固：服务端权威时间戳 + 乐观锁版本号 + Realtime publication | `supabase/migrations/2026-09-11-sync-hardening.sql` |
 | 客户端初始化 | 未配置环境变量时返回 null，应用完全本地可用 | `apps/web/lib/supabase/client.ts` |
-| 同步引擎 | outbox 推送（条件更新 `.lte updated_at` 实现 LWW）/ 增量拉取（`updated_at > cursor`）/ 墓碑删除 / 冲突时远端胜出回填本地 | `apps/web/lib/sync/sync-engine.ts` |
-| 入队触发 | 订阅 notes/notebooks 变更事件 → outbox；保存后 5s 防抖同步、登录/上线/手动按钮触发 | 同上 |
+| 同步引擎 | outbox 推送（乐观锁条件更新 `.eq version`，冲突按「本地编辑时间 vs 服务端 `server_updated_at`」LWW 裁决）/ 增量拉取（`server_updated_at > cursor` 服务端时钟游标 + 分页循环，与设备时钟无关）/ 墓碑删除带时间裁决（本地更新的编辑可复活）/ 删除走乐观锁 / 队列单条失败不阻塞 | `apps/web/lib/sync/sync-engine.ts` |
+| Realtime | 订阅 notes/notebooks 变更，远端写入 1.5s 防抖自动拉取，多设备秒级收敛 | 同上 |
 | 图片上云 | push 时提取正文 data URL → Storage `note-images/<uid>/<noteId>/<hash>.<ext>` → 服务端副本改写为公开链接；本地保留 data URL 保离线 | 同上 |
-| 认证 | Supabase 邮箱密码 / Magic Link 免密（signInWithOtp + 6 位码 verifyOtp 兜底）/ Google / GitHub OAuth；不强制登录（本地优先） | `app/(auth)/login/page.tsx` |
-| 状态 UI | 头部同步芯片：未配置隐藏 / 未登录入口 / 同步中转圈 / 已同步时间 / 失败重试 / 退出登录 | `components/layout/header.tsx` |
+| 认证与账号 | 强制登录（登录门禁 `require-auth`，未登录仅见登录页）；邮箱密码 / Magic Link 免密（含 6 位验证码兜底）/ GitHub；账号中心页（查看登录方式、补设/修改密码、绑定 GitHub） | `app/(auth)/login/page.tsx`、`app/(main)/account/page.tsx` |
+| 数据隔离 | 本地 IndexedDB 按登录用户分库（`QuickWikiDB:<uid>`），多账号互不可见 | `lib/db/index.ts` |
+| 状态 UI | 头部同步芯片：同步中转圈 / 已同步时间 / 失败重试 / 退出登录 | `components/layout/header.tsx` |
 | 本地元数据 | DB v3：`outbox` 出站队列；`meta` 存拉取水位与图片 URL 映射 | `apps/web/lib/db/index.ts` |
 
 ### 启用步骤
 
 1. Supabase 控制台创建项目（区域选新加坡）
-2. SQL Editor 执行 `supabase/schema.sql`
+2. SQL Editor 执行 `supabase/schema.sql`（全新安装）；已有旧版数据库的存量库改执行 `supabase/migrations/2026-09-11-sync-hardening.sql`
 3. 复制 Project URL 与 anon 公钥到 `apps/web/.env.local`（模板 `.env.example`）
 4. 重启 dev / 重新构建（静态导出下 `NEXT_PUBLIC_*` 构建时内联）
-5. 应用内「登录同步」→ 注册/登录 → 自动首同步
+5. 部署后打开应用即进入登录页，注册/登录 → 自动首同步（新版客户端首次启动会全量重拉一次，属游标切换的预期行为）
 
-### 已知限制（验证阶段）
+### 已知限制
 
-- LWW 用客户端时钟比较，跨设备时钟偏差影响冲突胜负（后续改服务端时钟或 version 向量）
-- 冲突时本地较旧的脏修改被远端覆盖（LWW 固有语义，无合并提示）
+- 冲突仍为 LWW 覆盖，无三路合并/提示（固有语义；多端最终一致）
+- 真正写冲突时的裁决含跨时钟启发式比较（本地编辑时间 vs 服务端时间），常规路径已不依赖设备时钟
 - 第二台设备拉取的图片为远程 URL，离线查看依赖浏览器/Service Worker 缓存
-- 未做 Realtime 订阅（多设备实时推送），当前靠触发器同步
 
 ### 免费版防暂停保活（已内置）
 

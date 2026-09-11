@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  AlertTriangle,
   BookOpen,
   Cloud,
   Download,
@@ -16,13 +15,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { isSupabaseConfigured } from "@/lib/supabase/client";
 
 /**
  * 功能清单面板（帮助文档）。
  * 约定：新增/修改/移除用户可见功能时，必须在同一次改动里同步本文件；
  * 只写已实现的功能与真实位置，不写计划中的功能。
- * 最近更新：2026-09-11（强制登录 + 本地数据按账号分库隔离）
+ * 注意：本面板渲染于公网页面，JS 字符串可被任何访客从构建产物中读到，
+ * 严禁写入部署指引、后端配置细节、运维机制（保活/Secrets/区域等）内部信息，
+ * 此类内容请写在仓库 ROADMAP.md。
+ * 最近更新：2026-09-11（同步加固 + Realtime；移除公网不该出现的部署信息）
  */
 
 interface FeatureGroup {
@@ -89,17 +90,15 @@ const FEATURE_GROUPS: FeatureGroup[] = [
   },
   {
     icon: <Cloud className="h-4 w-4" />,
-    title: "云同步（Supabase · 验证中）",
+    title: "云同步（多设备）",
     items: [
-      "登录后使用：未登录只能看到登录页；本地 IndexedDB 按账号分库隔离存储",
+      "登录后使用：未登录只能看到登录页；数据按账号隔离存储",
       "登录方式：邮箱密码 / Magic Link 免密链接（含 6 位验证码兜底）/ GitHub",
       "同一邮箱只对应一个账号：重复「注册」会提示已注册，改用登录即可",
       "账号管理（右上角头像菜单 → 账号管理）：查看登录方式、补设/修改密码、绑定 GitHub",
-      "同步触发：保存后自动（5 秒防抖）/ 头部刷新按钮手动 / 恢复联网时",
-      "离线优先：断网继续写本地，恢复后按队列补推；删除以墓碑同步",
-      "冲突按最后写入胜出；图片自动上传云存储并改写引用",
-      "免费版保活：仓库内置 GitHub Actions 每日打卡（配置 Secrets 即生效），防 7 天不活跃被暂停",
-      "未配置时头部不显示同步入口；配置见仓库 supabase/schema.sql 与 apps/web/.env.example",
+      "同步触发：保存后自动 / 头部刷新按钮手动 / 恢复联网时；其他设备的改动自动推送到本机，无需手动刷新",
+      "离线优先：断网继续写本地，恢复后按队列补推；删除会同步到所有设备",
+      "冲突按最后写入胜出，多端数据最终一致；图片自动上传云存储并改写引用",
     ],
   },
   {
@@ -151,56 +150,6 @@ export function FeaturesDialog({ open, onOpenChange }: FeaturesDialogProps) {
           </p>
         </DialogHeader>
 
-        {/* 待办置顶：启用云同步的步骤（配置后自动消失） */}
-        {!isSupabaseConfigured ? (
-          <section className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-3">
-            <h3 className="flex items-center gap-1.5 text-sm font-semibold text-amber-600 dark:text-amber-400">
-              <AlertTriangle className="h-4 w-4" />
-              待办：启用云同步还差 4 步
-            </h3>
-            <ol className="mt-1.5 list-decimal space-y-1 pl-4 text-xs leading-relaxed">
-              <li>
-                在 Supabase 控制台创建项目（区域选
-                <strong className="mx-0.5">新加坡</strong>）
-              </li>
-              <li>
-                在其 SQL Editor 中执行仓库根目录的
-                <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
-                  supabase/schema.sql
-                </code>
-                （建表 + 权限 + 图片存储桶）
-              </li>
-              <li>
-                把 Project URL 与 anon 公钥填入
-                <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
-                  apps/web/.env.local
-                </code>
-                （模板见 .env.example），重启 dev 或重新构建
-              </li>
-              <li>
-                在 Auth → Providers 中确认登录方式：Email 默认已开（Magic
-                Link / 验证码走它）；要用 GitHub 登录需启用并填入
-                Client ID / Secret；Redirect URLs 需包含你的访问地址（如
-                <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
-                  http://localhost:3000/login
-                </code>
-                ）；如需在「账号管理」内直接绑定 GitHub，还需在 Auth →
-                Sign In / Providers 开启 Manual Linking
-              </li>
-            </ol>
-            <p className="mt-1.5 text-[11px] text-muted-foreground">
-              完成后页面顶部会出现「登录同步」入口，登录即可开始多设备同步。
-              可选加固：在 GitHub 仓库 Settings → Secrets 配置 SUPABASE_URL 与
-              SUPABASE_ANON_KEY，仓库自带的每日保活工作流会自动打卡，防止免费项目
-              7 天不活跃被暂停。
-            </p>
-          </section>
-        ) : (
-          <p className="rounded-lg border border-green-600/30 bg-green-600/10 px-3 py-2 text-xs text-green-700 dark:text-green-400">
-            云同步已配置：在页面顶部点「登录同步」登录后即生效。
-          </p>
-        )}
-
         <div className="grid gap-4 sm:grid-cols-2">
           {FEATURE_GROUPS.map((group) => (
             <section
@@ -238,7 +187,7 @@ export function FeaturesDialog({ open, onOpenChange }: FeaturesDialogProps) {
         </section>
 
         <p className="text-center text-[11px] text-muted-foreground">
-          规划中：云端 Realtime 实时推送 · 桌面客户端（Tauri）· 移动端 App —— 详见仓库 ROADMAP.md
+          规划中：桌面客户端（Tauri）· 移动端 App
         </p>
       </DialogContent>
     </Dialog>
