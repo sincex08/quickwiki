@@ -122,6 +122,38 @@
   outline: 2px solid hsl(var(--primary));
 }
 
+/* 附件引用（quickwiki-att://）节点视图：占位卡片与选中态 */
+.attachment-image.ProseMirror-selectednode {
+  outline: 2px solid hsl(var(--primary));
+  border-radius: var(--radius);
+}
+.attachment-image__placeholder {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: 100%;
+  margin: 0.5rem 0;
+  padding: 0.75rem 1rem;
+  border: 1px dashed hsl(var(--border));
+  border-radius: var(--radius);
+  color: hsl(var(--muted-foreground));
+  font-size: 0.75rem;
+  overflow: hidden;
+}
+.md-img-missing {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  max-width: 100%;
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px dashed hsl(var(--border));
+  border-radius: var(--radius);
+  color: hsl(var(--muted-foreground));
+  font-size: 0.75rem;
+  overflow: hidden;
+}
+
 /* ===== 任务清单 ===== */
 .tiptap ul[data-type="taskList"] {
   list-style: none;

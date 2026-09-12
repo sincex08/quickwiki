@@ -6,6 +6,8 @@ import {
   noteRepo,
   tagRepo,
 } from "@/lib/data/repository";
+import { attachmentRepo } from "@/lib/data/attachment-repository";
+import type { AttachmentRecord } from "@/lib/db";
 import { subscribe } from "@/lib/events";
 import type {
   ListFilters,
@@ -180,4 +182,38 @@ export function useNoteCounts() {
   }, []);
 
   return counts;
+}
+
+/**
+ * 某笔记的附件记录（含 blob，抽屉缩略图用）。
+ * 订阅 attachments 变更，上传/删除/重命名后自动刷新。
+ */
+export function useAttachmentRecords(noteId: string | null) {
+  const [records, setRecords] = useState<AttachmentRecord[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!noteId) {
+      setRecords([]);
+      setLoading(false);
+      return;
+    }
+    let active = true;
+    setLoading(true);
+    const load = () => {
+      attachmentRepo.listRecordsByNote(noteId).then((list) => {
+        if (!active) return;
+        setRecords(list);
+        setLoading(false);
+      });
+    };
+    load();
+    const unsub = subscribe("attachments", load);
+    return () => {
+      active = false;
+      unsub();
+    };
+  }, [noteId]);
+
+  return { records, loading };
 }

@@ -1,9 +1,9 @@
 import Dexie, { type Table } from "dexie";
-import type { Note, Notebook, Tag, NoteTag } from "@quickwiki/shared";
+import type { Attachment, Note, Notebook, Tag, NoteTag } from "@quickwiki/shared";
 import { DB_NAME } from "@quickwiki/shared";
 
 /** 登录用户标记（sync-engine 在登录/退出时写入，见 AUTH_UID_KEY） */
-const AUTH_UID_KEY = "quickwiki.uid";
+export const AUTH_UID_KEY = "quickwiki.uid";
 
 /** 已登录 → 按用户分库（数据隔离）；未登录 → 占位库名（登录门禁挡住不会访问） */
 function resolveDbName(): string {
@@ -25,12 +25,18 @@ export interface MetaEntry {
 /** 同步出站队列：每个实体最多一条待推送记录（key = kind:entityId） */
 export interface OutboxEntry {
   key: string;
-  kind: "note" | "notebook";
+  kind: "note" | "notebook" | "attachment";
   entityId: string;
   deleted: boolean;
   queuedAt: number;
   /** 连续推送失败次数（仅统计用途，非索引字段，无需升库版本） */
   attempts?: number;
+}
+
+/** 附件完整记录：元数据 + 二进制（IndexedDB 结构化克隆原生支持 Blob 内联）。
+ *  blob 可缺省：云同步元数据先行时先落无 blob 记录，靠懒下载回填 */
+export interface AttachmentRecord extends Attachment {
+  blob?: Blob;
 }
 
 /**
@@ -49,6 +55,7 @@ export const db = new Dexie(resolveDbName()) as Dexie & {
   noteTags: Table<NoteTag, [string, string]>;
   meta: Table<MetaEntry, string>;
   outbox: Table<OutboxEntry, string>;
+  attachments: Table<AttachmentRecord, string>;
 };
 
 db.version(1).stores({
@@ -78,4 +85,9 @@ db.version(2)
 /** v3：云同步出站队列 */
 db.version(3).stores({
   outbox: "key, queuedAt",
+});
+
+/** v4：附件表（图片唯一来源，blob 内联；升级只建 store，无数据搬运） */
+db.version(4).stores({
+  attachments: "id, noteId, createdAt, [noteId+hash]",
 });

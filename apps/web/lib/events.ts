@@ -11,7 +11,7 @@ export interface ChangeEvent {
   ids: string[];
 }
 
-export type Channel = "notes" | "notebooks" | "tags";
+export type Channel = "notes" | "notebooks" | "tags" | "attachments";
 
 type Handler = (event: ChangeEvent) => void;
 

@@ -39,21 +39,27 @@ interface UIState {
   searchQuery: string;
   /** 移动端侧边栏抽屉 */
   sidebarOpen: boolean;
+  /** 附件抽屉（编辑器头部按钮打开，按当前笔记维度） */
+  attachmentsDrawerOpen: boolean;
   /** 编辑器模式（提升到 store 供头部开关感知） */
   editorMode: EditorMode;
   /** 预览模式是否开启「点击块编辑」（头部开关控制，持久化） */
   hybridEditing: boolean;
   /** 笔记列表是否只展示标题（紧凑模式，中栏更窄，持久化） */
   noteListTitleOnly: boolean;
+  /** 源码视图重挂载计数：抽屉等外部路径改写正文后 bump，刷新 textarea 内容 */
+  sourceNonce: number;
 
   setNotebookFilter: (id: string | null) => void;
   setTagFilter: (tag: string | null) => void;
   openNote: (id: string | null) => void;
   setSearchQuery: (q: string) => void;
   setSidebarOpen: (open: boolean) => void;
+  setAttachmentsDrawerOpen: (open: boolean) => void;
   setEditorMode: (mode: EditorMode) => void;
   setHybridEditing: (on: boolean) => void;
   setNoteListTitleOnly: (on: boolean) => void;
+  bumpSourceNonce: () => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -62,15 +68,18 @@ export const useUIStore = create<UIState>((set) => ({
   activeNoteId: null,
   searchQuery: "",
   sidebarOpen: false,
+  attachmentsDrawerOpen: false,
   editorMode: "edit",
   hybridEditing: readHybridDefault(),
   noteListTitleOnly: readListTitleOnlyDefault(),
+  sourceNonce: 0,
 
   setNotebookFilter: (id) => set({ notebookFilter: id, tagFilter: null }),
   setTagFilter: (tag) => set({ tagFilter: tag }),
   openNote: (id) => set({ activeNoteId: id }),
   setSearchQuery: (q) => set({ searchQuery: q }),
   setSidebarOpen: (open) => set({ sidebarOpen: open }),
+  setAttachmentsDrawerOpen: (open) => set({ attachmentsDrawerOpen: open }),
   setEditorMode: (mode) => set({ editorMode: mode }),
   setHybridEditing: (on) => {
     try {
@@ -88,4 +97,5 @@ export const useUIStore = create<UIState>((set) => ({
     }
     set({ noteListTitleOnly: on });
   },
+  bumpSourceNonce: () => set((s) => ({ sourceNonce: s.sourceNonce + 1 })),
 }));

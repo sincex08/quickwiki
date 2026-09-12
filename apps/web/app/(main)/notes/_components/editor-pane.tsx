@@ -9,6 +9,7 @@ import {
   Check,
   Eye,
   FileCode2,
+  Images,
   PenLine,
   Pin,
   RefreshCcw,
@@ -28,10 +29,12 @@ import { LazyEditor } from "@/components/editor/lazy-editor";
 import { MarkdownSource } from "@/components/editor/markdown-source";
 import { HybridPreview } from "@/components/editor/hybrid-preview";
 import { TagEditor } from "@/components/notes/tag-editor";
+import { AttachmentDrawer } from "@/components/attachments/attachment-drawer";
 import { useNote, useNotebooks } from "@/hooks/use-data";
 import { useNoteActions } from "@/hooks/use-note-actions";
 import { useUIStore, type EditorMode } from "@/stores/use-ui-store";
 import { noteRepo } from "@/lib/data/repository";
+import { releaseAllObjectUrls } from "@/lib/attachments/resolve";
 import { cn, debounce, extractTitle } from "@/lib/utils";
 
 export function EditorPane() {
@@ -44,11 +47,21 @@ export function EditorPane() {
   const { note, loaded } = useNote(activeNoteId);
   const { notebooks } = useNotebooks();
   const { deleteNote, togglePin, moveToNotebook } = useNoteActions();
+  const attachmentsDrawerOpen = useUIStore((s) => s.attachmentsDrawerOpen);
+  const setAttachmentsDrawerOpen = useUIStore((s) => s.setAttachmentsDrawerOpen);
+  const sourceNonce = useUIStore((s) => s.sourceNonce);
+  const bumpSourceNonce = useUIStore((s) => s.bumpSourceNonce);
 
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   const pendingRef = useRef<{ id: string; content: string } | null>(null);
+  /**
+   * 外部改写正文（附件抽屉追加/移除引用）后的临时内容。
+   * note.content 的回读（Dexie 读 + 事件）滞后于写入，而 MarkdownSource
+   * 只在挂载时读 value —— 不先接管内容就重挂，源码视图会用旧内容初始化。
+   */
+  const contentOverrideRef = useRef<string | null>(null);
 
   // 笔记确认不存在（已删除/无效深链）时自动清除选中，避免移动端白屏且无法返回
   useEffect(() => {
@@ -86,12 +99,14 @@ export function EditorPane() {
     []
   );
 
-  // 切换笔记或卸载时：立即落盘未保存内容并回到编辑模式
+  // 切换笔记或卸载时：立即落盘未保存内容、回到编辑模式、释放附件 objectURL
   useEffect(() => {
     return () => {
       debouncedSave.cancel();
       flushPending();
       setEditorMode("edit");
+      releaseAllObjectUrls();
+      contentOverrideRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeNoteId]);
@@ -124,6 +139,32 @@ export function EditorPane() {
     titleManualRef.current && titleManualRef.current.trim() !== ""
       ? titleManualRef.current
       : extractTitle(content);
+
+  // 仓库内容追平外部写入后撤销临时覆盖（此后以 note.content 为准）
+  useEffect(() => {
+    const override = contentOverrideRef.current;
+    if (override !== null && note?.content === override) {
+      contentOverrideRef.current = null;
+    }
+  }, [note?.content]);
+
+  /**
+   * 外部组件（附件抽屉）改写正文的唯一入口。顺序很重要：
+   * 先取消本端待落盘内容（否则防抖回调会用旧内容覆盖外部写入），
+   * 再在同一次渲染内接管内容并重挂源码视图（MarkdownSource 只在挂载时读 value），
+   * 最后才异步落盘。
+   */
+  const applyExternalContent = (markdown: string) => {
+    if (!activeNoteId) return;
+    debouncedSave.cancel();
+    pendingRef.current = null;
+    contentOverrideRef.current = markdown;
+    bumpSourceNonce();
+    void noteRepo.update(activeNoteId, {
+      content: markdown,
+      title: computeTitle(markdown),
+    });
+  };
 
   const debouncedTitleSave = useMemo(
     () =>
@@ -170,8 +211,10 @@ export function EditorPane() {
     return <div className="h-full" />;
   }
 
-  // 模式切换不丢内容的关键：优先取防抖期内未落盘的最新内容
-  const latestContent = pendingRef.current?.content ?? note.content;
+  // 模式切换不丢内容的关键：优先取防抖期内未落盘的最新内容，
+  // 其次是外部改写后尚未回读到位的内容
+  const latestContent =
+    pendingRef.current?.content ?? contentOverrideRef.current ?? note.content;
   const currentNotebook = notebooks.find((n) => n.id === note.notebookId);
 
   const modeButtons: Array<{
@@ -239,6 +282,17 @@ export function EditorPane() {
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
+
+        {/* 附件抽屉入口（三模式共享） */}
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => setAttachmentsDrawerOpen(!attachmentsDrawerOpen)}
+          aria-label="附件"
+          title="本页附件"
+        >
+          <Images className="h-4 w-4" />
+        </Button>
 
         <Button
           variant="ghost"
@@ -344,8 +398,12 @@ export function EditorPane() {
         />
       ) : editorMode === "source" ? (
         <div className="min-h-0 flex-1">
-          {/* key 确保切换笔记时重挂载，采用新笔记内容作为初始值 */}
-          <MarkdownSource key={note.id} value={latestContent} onChange={handleChange} />
+          {/* key 确保切换笔记时重挂载；sourceNonce 供抽屉等外部改写后刷新内容 */}
+          <MarkdownSource
+            key={`${note.id}:${sourceNonce}`}
+            value={latestContent}
+            onChange={handleChange}
+          />
         </div>
       ) : (
         <LazyEditor
@@ -367,6 +425,13 @@ export function EditorPane() {
           await deleteNote(note.id);
         }}
         onCancel={() => setConfirmOpen(false)}
+      />
+
+      {/* 附件抽屉（本页图片管理） */}
+      <AttachmentDrawer
+        note={note}
+        content={latestContent}
+        onExternalContentChange={applyExternalContent}
       />
     </div>
   );

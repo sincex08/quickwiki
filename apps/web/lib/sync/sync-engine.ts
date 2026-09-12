@@ -1,8 +1,13 @@
 import type { SupabaseClient, RealtimeChannel } from "@supabase/supabase-js";
 import { getSupabase } from "@/lib/supabase/client";
-import { db, type OutboxEntry } from "@/lib/db";
+import { db, AUTH_UID_KEY, type AttachmentRecord, type OutboxEntry } from "@/lib/db";
 import { emitChange, subscribe } from "@/lib/events";
 import { debounce } from "@/lib/utils";
+import {
+  attachmentRepo,
+  attachmentExt,
+} from "@/lib/data/attachment-repository";
+import { setBlobMissingHandler } from "@/lib/attachments/resolve";
 import type { Note, Notebook } from "@quickwiki/shared";
 
 /**
@@ -12,11 +17,14 @@ import type { Note, Notebook } from "@quickwiki/shared";
  * - push：本地 outbox 队列 → 服务端；乐观锁条件更新（.eq version），
  *   冲突时以「本地编辑时间 vs 服务端 server_updated_at」做 LWW 裁决
  * - pull：server_updated_at > 游标 增量拉取（服务端权威时钟，与设备时钟无关），
- *   按 server_updated_at 排序 + 分页循环；游标为服务端时间（ISO 字符串）
+ *   按 server_updated_at 排序 + 分页循环；游标为服务端时间（ISO 字符串）。
+ *   attachments 使用独立游标（各表 server_updated_at 独立推进）
  * - 删除：软删除墓碑。push 删除需通过乐观锁；墓碑应用会比较删除意图时间，
  *   本地存在更新的编辑则复活（推回并清除墓碑）
  * - server_updated_at / version 均由服务端触发器维护，客户端不可伪造
- * - 图片：push 时把正文 data URL 上传到 Storage 并改写为公开链接（仅服务端副本）
+ * - 附件：元数据走 attachments 表（乐观锁/墓碑同 notes）；
+ *   二进制为不可变内容，上传 note-images 桶（<uid>/<noteId>/<attId>.<ext>），
+ *   永不冲突；本端缺 blob 时按需懒下载回填（渲染侧触发）
  *
  * 已知限制：冲突裁决中「本地编辑时间（设备时钟）vs server_updated_at（服务端
  * 时钟）」仍是跨时钟启发式比较，仅在真正的写冲突时介入；常规路径（漏拉、
@@ -46,9 +54,6 @@ let state: SyncState = {
   userEmail: null,
 };
 const listeners = new Set<(s: SyncState) => void>();
-
-/** 与 lib/db 的 AUTH_UID_KEY 对应：据此按用户分库 */
-const AUTH_UID_KEY = "quickwiki.uid";
 
 /** pull 游标初始值（epoch）；旧数值游标会被重置为该值触发一次全量重拉 */
 const EPOCH_CURSOR = "1970-01-01T00:00:00+00:00";
@@ -102,6 +107,12 @@ function setState(patch: Partial<SyncState>) {
 /** 应用远端数据到本地时置位，避免事件回流再次入队造成循环 */
 let applyingRemote = false;
 
+/**
+ * 仅本地语义的附件写入（如 blob 懒下载回填）置位：这类写入不改变元数据，
+ * 若照常入队只会在服务端空推一次 UPDATE（version 自增 + Realtime 广播给各端）。
+ */
+let localAttachmentWrite = false;
+
 const scheduleSync = debounce(() => {
   void syncNow();
 }, 5000);
@@ -139,6 +150,16 @@ function subscribeRealtime(sb: SupabaseClient, userId: string): void {
         event: "*",
         schema: "public",
         table: "notebooks",
+        filter: `user_id=eq.${userId}`,
+      },
+      () => scheduleRealtimeSync()
+    )
+    .on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "attachments",
         filter: `user_id=eq.${userId}`,
       },
       () => scheduleRealtimeSync()
@@ -190,6 +211,12 @@ export async function initSync(): Promise<void> {
   subscribe("notes", (e) => {
     if (applyingRemote) return;
     void enqueue("note", e.ids, e.type === "delete");
+    // 删除笔记级联：本地附件一并删除（其 delete 事件会自动入队附件墓碑）
+    if (e.type === "delete") {
+      for (const noteId of e.ids) {
+        void attachmentRepo.deleteByNote(noteId).catch(() => {});
+      }
+    }
     scheduleSync();
   });
   subscribe("notebooks", (e) => {
@@ -197,6 +224,14 @@ export async function initSync(): Promise<void> {
     void enqueue("notebook", e.ids, e.type === "delete");
     scheduleSync();
   });
+  subscribe("attachments", (e) => {
+    if (applyingRemote || localAttachmentWrite) return;
+    void enqueue("attachment", e.ids, e.type === "delete");
+    scheduleSync();
+  });
+
+  // 渲染层发现本地缺 blob 时的懒下载入口
+  setBlobMissingHandler((id) => queueBlobDownload(id));
 
   if (typeof window !== "undefined") {
     window.addEventListener("online", () => void syncNow());
@@ -211,7 +246,7 @@ export async function initSync(): Promise<void> {
 }
 
 async function enqueue(
-  kind: "note" | "notebook",
+  kind: "note" | "notebook" | "attachment",
   ids: string[],
   deleted: boolean
 ): Promise<void> {
@@ -264,6 +299,8 @@ async function push(sb: SupabaseClient): Promise<string | null> {
     try {
       if (entry.kind === "note") {
         await pushNote(sb, entry);
+      } else if (entry.kind === "attachment") {
+        await pushAttachment(sb, entry);
       } else {
         await pushNotebook(sb, entry);
       }
@@ -310,7 +347,18 @@ interface RemoteNotebook extends RemoteRowMeta {
   color: string;
 }
 
-type SyncTable = "notes" | "notebooks";
+interface RemoteAttachment extends RemoteRowMeta {
+  note_id: string;
+  filename: string;
+  mime: string;
+  size: number;
+  width: number;
+  height: number;
+  hash: string;
+  compressed: boolean;
+}
+
+type SyncTable = "notes" | "notebooks" | "attachments";
 
 function ts(iso: string | null | undefined): number {
   return iso ? new Date(iso).getTime() : 0;
@@ -419,6 +467,8 @@ async function applyRemote(
 ): Promise<void> {
   if (table === "notes") {
     await applyRemoteNote(row as RemoteNote, force);
+  } else if (table === "attachments") {
+    await applyRemoteAttachment(row as RemoteAttachment, force);
   } else {
     await applyRemoteNotebook(row as RemoteNotebook, force);
   }
@@ -430,21 +480,22 @@ async function applyRemote(
  * - 远端行不存在 / 已是墓碑 → 无需操作
  * - 远端内容写入晚于本地删除意图 → 删除让位，拉回远端行（本地复活）
  * - 否则条件删除（.eq version），持续冲突则保留条目稍后重试
+ * 返回裁决时看到的远端行（null = 行不存在；附件删除后清 Storage 用）
  */
 async function pushTombstone(
   sb: SupabaseClient,
   table: SyncTable,
   entry: OutboxEntry
-): Promise<void> {
+): Promise<RemoteRowMeta | null> {
   const delAt = new Date(entry.queuedAt).toISOString();
   let remote = await fetchRemote(sb, table, entry.entityId);
-  if (!remote || remote.deleted_at) return;
+  if (!remote || remote.deleted_at) return remote;
 
   for (let attempt = 0; attempt < PUSH_CONFLICT_RETRIES; attempt++) {
     if (ts(remote.server_updated_at) > ts(delAt)) {
       // 远端有更新的写入：删除让位，把该行拉回本地
       await applyRemote(table, remote, true);
-      return;
+      return remote;
     }
     const del = await sb
       .from(table)
@@ -453,9 +504,9 @@ async function pushTombstone(
       .eq("version", remote.version)
       .select();
     if (del.error) throw new Error(del.error.message);
-    if (del.data && del.data.length > 0) return;
+    if (del.data && del.data.length > 0) return remote;
     remote = await fetchRemote(sb, table, entry.entityId);
-    if (!remote || remote.deleted_at) return;
+    if (!remote || remote.deleted_at) return remote;
   }
   throw new Error(`${table}:${entry.entityId} 删除冲突，稍后重试`);
 }
@@ -472,14 +523,14 @@ async function pushNote(
     return;
   }
 
-  const content = await uploadEmbeddedImages(sb, note);
+  // 正文即协议引用（quickwiki-att://），本地与服务端同内容、零改写
   const row = {
     id: note.id,
     user_id: userId,
     notebook_id: note.notebookId,
     title: note.title,
     title_manual: note.titleManual,
-    content,
+    content: note.content,
     tags: note.tags,
     pinned: note.pinned,
     created_at: new Date(note.createdAt).toISOString(),
@@ -598,6 +649,80 @@ async function pushNotebook(
   );
 }
 
+/**
+ * 附件 push：元数据走 attachments 表（乐观锁/墓碑），二进制为不可变内容，
+ * 上传 note-images 桶后永不冲突，因此元数据冲突一律远端胜出（本地仅
+ * rename 可能竞争，可接受）。
+ */
+async function pushAttachment(
+  sb: SupabaseClient,
+  entry: OutboxEntry
+): Promise<void> {
+  const userId = state.userId!;
+  const att = await db.attachments.get(entry.entityId);
+
+  if (entry.deleted || !att) {
+    const remote = await pushTombstone(sb, "attachments", entry);
+    // 元数据墓碑落定后尽力删除 Storage 对象（失败仅记日志，孤儿由清理任务兜底）
+    if (remote) {
+      const row = remote as RemoteAttachment;
+      const path = `${userId}/${row.note_id}/${row.id}.${attachmentExt(row.mime)}`;
+      try {
+        await sb.storage.from("note-images").remove([path]);
+      } catch (err) {
+        console.warn("attachment storage cleanup failed:", path, err);
+      }
+    }
+    return;
+  }
+
+  const metaRow = {
+    id: att.id,
+    user_id: userId,
+    note_id: att.noteId,
+    filename: att.filename,
+    mime: att.mime,
+    size: att.size,
+    width: att.width,
+    height: att.height,
+    hash: att.hash,
+    compressed: att.compressed,
+    created_at: new Date(att.createdAt).toISOString(),
+    updated_at: new Date(att.updatedAt).toISOString(),
+    deleted_at: null,
+  };
+
+  // 元数据先行（insert 或乐观锁 upsert；冲突远端胜出）
+  let remote = await fetchRemote(sb, "attachments", att.id);
+  if (!remote) {
+    remote = await insertRemote(sb, "attachments", metaRow);
+  } else {
+    const updated = await sb
+      .from("attachments")
+      .update(metaRow)
+      .eq("id", att.id)
+      .eq("version", remote.version)
+      .select();
+    if (updated.error) throw new Error(updated.error.message);
+    if (updated.data && updated.data.length > 0) {
+      remote = updated.data[0] as RemoteRowMeta;
+    }
+    // 0 行受影响 = 版本前移：接受远端元数据（本地 blob 不受影响）
+  }
+
+  // 二进制上传（upsert 幂等；无 blob = 元数据先行场景，等 blob 回填后下轮补传）
+  const record = await db.attachments.get(att.id);
+  if (record?.blob) {
+    const path = `${userId}/${att.noteId}/${att.id}.${attachmentExt(att.mime)}`;
+    const up = await sb.storage
+      .from("note-images")
+      .upload(path, record.blob, { upsert: true, contentType: att.mime });
+    if (up.error) throw new Error(`附件二进制上传失败：${up.error.message}`);
+  }
+
+  await db.attachments.put({ ...att, syncVersion: remote.version });
+}
+
 // ---------- 拉取 ----------
 
 /**
@@ -650,6 +775,44 @@ async function pull(sb: SupabaseClient): Promise<void> {
     key: cursorKey,
     value: new Date(nextCursorTs).toISOString(),
   });
+
+  // 附件独立游标：元数据先行，blob 缺失由懒下载回填
+  const attCursorKey = `sync.lastPullAtt:${userId}`;
+  const attMeta = await db.meta.get(attCursorKey);
+  const attCursor =
+    typeof attMeta?.value === "string" ? attMeta.value : EPOCH_CURSOR;
+  const attPrevTs = ts(attCursor);
+  let attMaxTs = attPrevTs;
+
+  let attSince = attCursor;
+  for (;;) {
+    const res = await sb
+      .from("attachments")
+      .select("*")
+      .eq("user_id", userId)
+      .gt("server_updated_at", attSince)
+      .order("server_updated_at", { ascending: true })
+      .limit(PULL_PAGE_SIZE);
+    if (res.error) throw new Error(res.error.message);
+    const rows = (res.data ?? []) as RemoteAttachment[];
+    for (const row of rows) {
+      await applyRemoteAttachment(row);
+    }
+    if (rows.length > 0) {
+      const lastTs = ts(rows[rows.length - 1].server_updated_at);
+      if (lastTs > attMaxTs) attMaxTs = lastTs;
+    }
+    if (rows.length < PULL_PAGE_SIZE) break;
+    const nextSince = rows[rows.length - 1].server_updated_at;
+    if (ts(nextSince) <= ts(attSince)) break;
+    attSince = nextSince;
+  }
+
+  const attNextTs = Math.max(attPrevTs, attMaxTs - CURSOR_SAFETY_LAG_MS);
+  await db.meta.put({
+    key: attCursorKey,
+    value: new Date(attNextTs).toISOString(),
+  });
 }
 
 async function applyRemoteNote(row: RemoteNote, force = false): Promise<void> {
@@ -672,6 +835,8 @@ async function applyRemoteNote(row: RemoteNote, force = false): Promise<void> {
       }
       await db.notes.delete(row.id);
       await db.outbox.delete(`note:${row.id}`);
+      // 远端删除已级联附件：本地附件直接清理（无需入队，墓碑由附件 pull 收敛）
+      await removeNoteAttachmentsLocal(row.id);
       emitChange("notes", { type: "delete", ids: [row.id] });
       return;
     }
@@ -751,101 +916,117 @@ async function applyRemoteNotebook(
   }
 }
 
-// ---------- 图片上传 ----------
-
-const DATA_IMG_RE =
-  /!\[([^\]]*)\]\(data:image\/([a-z+.-]+);base64,([A-Za-z0-9+/=]+)\)/g;
-
-const MIME_EXT: Record<string, string> = {
-  png: "png",
-  jpeg: "jpg",
-  webp: "webp",
-  gif: "gif",
-  "svg+xml": "svg",
-};
-
-/** dataUrl → 公开 URL 的本地缓存（持久化在 meta，避免重复上传） */
-async function getImageMap(): Promise<Record<string, string>> {
-  const meta = await db.meta.get("sync.imgmap");
-  return (meta?.value as Record<string, string>) ?? {};
+/** 删除笔记的全部本地附件（笔记被删除的级联；由笔记删除路径调用） */
+async function removeNoteAttachmentsLocal(noteId: string): Promise<void> {
+  const ids = (await db.attachments
+    .where("noteId")
+    .equals(noteId)
+    .primaryKeys()) as string[];
+  if (ids.length === 0) return;
+  await db.attachments.bulkDelete(ids);
+  emitChange("attachments", { type: "delete", ids });
 }
 
-function hashString(s: string): string {
-  let h = 5381;
-  for (let i = 0; i < s.length; i++) {
-    h = ((h << 5) + h + s.charCodeAt(i)) | 0;
-  }
-  return (h >>> 0).toString(16);
-}
-
-function dataUrlToBlob(dataUrl: string): Blob {
-  const [head, base64] = dataUrl.split(",");
-  const mime = /data:([^;]+);base64/.exec(head)?.[1] ?? "image/png";
-  const bin = atob(base64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return new Blob([bytes], { type: mime });
-}
-
-/**
- * 把正文中的 data URL 图片上传到 Storage，返回改写后的服务端副本内容。
- * 本地内容保持 data URL 不变（离线可用）。
- */
-async function uploadEmbeddedImages(
-  sb: SupabaseClient,
-  note: Note
-): Promise<string> {
-  if (!note.content.includes("data:image/")) return note.content;
-
-  const map = await getImageMap();
-  let dirty = false;
-
-  const result = await replaceAsync(
-    note.content,
-    DATA_IMG_RE,
-    async (_m, alt: string, mimeSub: string, payload: string) => {
-      const dataUrl = `data:image/${mimeSub};base64,${payload}`;
-      if (map[dataUrl]) return `![${alt}](${map[dataUrl]})`;
-      const ext = MIME_EXT[mimeSub] ?? "img";
-      const path = `${state.userId}/${note.id}/${hashString(dataUrl)}.${ext}`;
-      const blob = dataUrlToBlob(dataUrl);
-      const up = await sb.storage
-        .from("note-images")
-        .upload(path, blob, { upsert: true, contentType: blob.type });
-      if (up.error) throw new Error(up.error.message);
-      const publicUrl = sb.storage.from("note-images").getPublicUrl(path).data
-        .publicUrl;
-      map[dataUrl] = publicUrl;
-      dirty = true;
-      return `![${alt}](${publicUrl})`;
+async function applyRemoteAttachment(
+  row: RemoteAttachment,
+  force = false
+): Promise<void> {
+  applyingRemote = true;
+  try {
+    if (row.deleted_at) {
+      // 附件不可变，无「本地更新」语义：直接接受删除
+      await db.attachments.delete(row.id);
+      await db.outbox.delete(`attachment:${row.id}`);
+      emitChange("attachments", { type: "delete", ids: [row.id] });
+      return;
     }
-  );
-
-  if (dirty) {
-    await db.meta.put({ key: "sync.imgmap", value: map });
+    const local = await db.attachments.get(row.id);
+    if (!force && local && local.filename === row.filename) {
+      // 元数据无变化：仅核对乐观锁基线，不动本地 blob
+      if (local.syncVersion !== row.version) {
+        await db.attachments.put({ ...local, syncVersion: row.version });
+      }
+      if (!local.blob) queueBlobDownload(row.id);
+      return;
+    }
+    // 元数据先行落库；本地已有 blob 时保留（不可变内容，等价即跳过重下）
+    const record: AttachmentRecord = {
+      id: row.id,
+      noteId: row.note_id,
+      filename: row.filename,
+      mime: row.mime,
+      size: Number(row.size),
+      width: row.width,
+      height: row.height,
+      hash: row.hash,
+      compressed: row.compressed,
+      createdAt: new Date(row.created_at).getTime(),
+      updatedAt: new Date(row.updated_at).getTime(),
+      syncVersion: row.version,
+      blob: local?.blob,
+    };
+    await db.attachments.put(record);
+    if (!record.blob) queueBlobDownload(row.id);
+    emitChange("attachments", { type: "update", ids: [row.id] });
+  } finally {
+    applyingRemote = false;
   }
-  return result;
 }
 
-/** String.replace 的异步回调版本（顺序执行） */
-async function replaceAsync(
-  input: string,
-  re: RegExp,
-  fn: (...args: string[]) => Promise<string>
-): Promise<string> {
-  const matches: Array<{ match: string; args: string[]; index: number }> = [];
-  let m: RegExpExecArray | null;
-  const global = new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g");
-  while ((m = global.exec(input)) !== null) {
-    matches.push({ match: m[0], args: m.slice(1), index: m.index });
+// ---------- 附件 blob 懒下载 ----------
+
+const BLOB_DOWNLOAD_MAX_CONCURRENT = 3;
+const blobDownloadQueued = new Set<string>();
+let blobDownloadsInFlight = 0;
+
+/** 本地缺 blob 的附件：按确定性公开 URL 下载回填（渲染触发，队列去重限流） */
+function queueBlobDownload(id: string): void {
+  if (blobDownloadQueued.has(id)) return;
+  blobDownloadQueued.add(id);
+  void pumpBlobDownloads();
+}
+
+async function pumpBlobDownloads(): Promise<void> {
+  while (
+    blobDownloadsInFlight < BLOB_DOWNLOAD_MAX_CONCURRENT &&
+    blobDownloadQueued.size > 0
+  ) {
+    const id = blobDownloadQueued.values().next().value as string;
+    blobDownloadQueued.delete(id);
+    blobDownloadsInFlight += 1;
+    void downloadBlobForAttachment(id).finally(() => {
+      blobDownloadsInFlight -= 1;
+      void pumpBlobDownloads();
+    });
   }
-  let out = "";
-  let last = 0;
-  for (const item of matches) {
-    out += input.slice(last, item.index);
-    out += await fn(item.match, ...item.args);
-    last = item.index + item.match.length;
+}
+
+async function downloadBlobForAttachment(id: string): Promise<void> {
+  try {
+    const sb = getSupabase();
+    const userId = state.userId;
+    if (!sb || !userId) return;
+    const record = await db.attachments.get(id);
+    if (!record || record.blob) return;
+
+    const path = `${userId}/${record.noteId}/${record.id}.${attachmentExt(record.mime)}`;
+    const { data } = sb.storage.from("note-images").getPublicUrl(path);
+    const res = await fetch(data.publicUrl);
+    if (!res.ok) return; // 对端尚未上传完成等情况：等下次渲染触发重试
+    const blob = await res.blob();
+    if (blob.size === 0) return;
+
+    const latest = await db.attachments.get(id);
+    if (!latest || latest.blob) return; // 已被删除/并发回填
+    // 只回填二进制、元数据不变：抑制 outbox 入队，避免一次空转的服务端写入
+    localAttachmentWrite = true;
+    try {
+      await db.attachments.put({ ...latest, blob });
+      emitChange("attachments", { type: "update", ids: [id] });
+    } finally {
+      localAttachmentWrite = false;
+    }
+  } catch (err) {
+    console.warn("attachment blob download failed:", id, err);
   }
-  out += input.slice(last);
-  return out;
 }

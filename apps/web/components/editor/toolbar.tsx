@@ -37,7 +37,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
-import { insertImageIntoEditor } from "@/lib/images";
+import { insertFilesAsAttachments } from "@/lib/images";
+import { useUIStore } from "@/stores/use-ui-store";
 import { LinkDialog } from "./link-dialog";
 
 interface ToolbarProps {
@@ -99,7 +100,9 @@ export function Toolbar({ editor, className }: ToolbarProps) {
 
   const handleFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    await insertImageIntoEditor(editor, Array.from(files));
+    const noteId = useUIStore.getState().activeNoteId;
+    if (!noteId) return;
+    await insertFilesAsAttachments(editor, Array.from(files), noteId);
   };
 
   const openLinkDialog = () => setLinkOpen(true);

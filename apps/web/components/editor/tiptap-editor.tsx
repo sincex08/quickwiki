@@ -1,11 +1,10 @@
 "use client";
 
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import { Markdown } from "tiptap-markdown";
-import Image from "@tiptap/extension-image";
 import Link from "@tiptap/extension-link";
 import TaskList from "@tiptap/extension-task-list";
 import TaskItem from "@tiptap/extension-task-item";
@@ -15,7 +14,10 @@ import TableHeader from "@tiptap/extension-table-header";
 import TableCell from "@tiptap/extension-table-cell";
 import { MarkdownInlineShortcuts } from "./markdown-shortcuts";
 import { Toolbar } from "./toolbar";
-import { insertImageIntoEditor } from "@/lib/images";
+import { AttachmentImage } from "./attachment-image";
+import { insertFilesAsAttachments } from "@/lib/images";
+import { registerActiveEditor } from "@/lib/attachments/refs";
+import { useUIStore } from "@/stores/use-ui-store";
 import { cn } from "@/lib/utils";
 
 export interface TipTapEditorProps {
@@ -67,7 +69,7 @@ export function TipTapEditor({
         transformPastedText: true,
         transformCopiedText: true,
       }),
-      Image.configure({ inline: false, allowBase64: true }),
+      AttachmentImage.configure({ inline: false, allowBase64: true }),
       Link.configure({
         openOnClick: false,
         autolink: true,
@@ -92,9 +94,10 @@ export function TipTapEditor({
       },
       handlePaste: (_view, event) => {
         const files = pickImageFiles(event.clipboardData?.files);
-        if (files.length > 0 && editorRef.current) {
+        const noteId = useUIStore.getState().activeNoteId;
+        if (files.length > 0 && editorRef.current && noteId) {
           event.preventDefault();
-          void insertImageIntoEditor(editorRef.current, files);
+          void insertFilesAsAttachments(editorRef.current, files, noteId);
           return true;
         }
         // 文本/富文本走默认路径（transformPastedText 负责 Markdown 解析）
@@ -103,9 +106,10 @@ export function TipTapEditor({
       handleDrop: (_view, event, _slice, moved) => {
         if (moved) return false;
         const files = pickImageFiles(event.dataTransfer?.files);
-        if (files.length > 0 && editorRef.current) {
+        const noteId = useUIStore.getState().activeNoteId;
+        if (files.length > 0 && editorRef.current && noteId) {
           event.preventDefault();
-          void insertImageIntoEditor(editorRef.current, files);
+          void insertFilesAsAttachments(editorRef.current, files, noteId);
           return true;
         }
         return false;
@@ -118,6 +122,12 @@ export function TipTapEditor({
       onChange?.(e.storage.markdown.getMarkdown());
     },
   });
+
+  // 注册活动编辑器（附件抽屉等外部组件跨组件插入引用）
+  useEffect(() => {
+    registerActiveEditor(editor ?? null);
+    return () => registerActiveEditor(null);
+  }, [editor]);
 
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col", className)}>

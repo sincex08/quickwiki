@@ -54,7 +54,7 @@ export interface TagRepository {
   list(): Promise<Tag[]>;
 }
 
-function newId(): string {
+export function newId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
   }

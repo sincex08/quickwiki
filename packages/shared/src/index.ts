@@ -59,6 +59,33 @@ export interface NoteTag {
   tagName: string;
 }
 
+/**
+ * 笔记附件（图片）：附件库是全应用图片的唯一来源。
+ * 正文以 ![alt](quickwiki-att://<id>) 引用；附件不可变（替换 = 删旧建新），
+ * 因此二进制无同步冲突，仅元数据参与乐观锁。
+ */
+export interface Attachment {
+  id: string;
+  /** 所属笔记（附件 1:N 绑定笔记，不随笔记本变化） */
+  noteId: string;
+  /** 原始文件名（仅展示用，已净化） */
+  filename: string;
+  mime: string;
+  /** 字节数（压缩后或原样） */
+  size: number;
+  /** 像素宽；0 表示未知（SVG/GIF） */
+  width: number;
+  height: number;
+  /** SHA-256 hex；空串表示环境不支持（去重降级） */
+  hash: string;
+  /** 是否经过压缩档（canvas → WebP） */
+  compressed: boolean;
+  createdAt: number;
+  updatedAt: number;
+  /** 云同步乐观锁版本，语义同 Note.syncVersion */
+  syncVersion?: number;
+}
+
 /** 列表查询过滤器（分页从第一天支持，避免后期重构） */
 export interface ListFilters {
   notebookId?: string;

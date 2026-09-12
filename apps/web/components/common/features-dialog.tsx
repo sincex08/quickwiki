@@ -5,6 +5,7 @@ import {
   Cloud,
   Download,
   FileText,
+  Images,
   Image as ImageIcon,
   MonitorSmartphone,
   Search,
@@ -23,7 +24,7 @@ import {
  * 注意：本面板渲染于公网页面，JS 字符串可被任何访客从构建产物中读到，
  * 严禁写入部署指引、后端配置细节、运维机制（保活/Secrets/区域等）内部信息，
  * 此类内容请写在仓库 ROADMAP.md。
- * 最近更新：2026-09-11（同步加固 + Realtime；移除公网不该出现的部署信息）
+ * 最近更新：2026-09-12（附件库：图片唯一来源 + 附件抽屉；同步更新图片、云同步、导出描述）
  */
 
 interface FeatureGroup {
@@ -59,10 +60,24 @@ const FEATURE_GROUPS: FeatureGroup[] = [
     ],
   },
   {
+    icon: <Images className="h-4 w-4" />,
+    title: "附件库（图片管理）",
+    items: [
+      "每篇笔记一个附件库，是全应用插图的唯一来源；编辑器头部「附件」按钮打开抽屉（PC 右侧 / 手机底部）",
+      "上传入口统一：抽屉按钮 / 拖拽文件进抽屉 / 粘贴 / 拖拽进正文 / 工具栏插入，都是「先入库、再插入引用」",
+      "网格显示缩略图、文件名、大小与时间；角标标注「原」（未压缩）与「未引用」",
+      "每张可预览大图、插入正文（编辑模式插在光标处，预览与源码模式追加到文末）、下载、重命名、删除",
+      "过滤：全部 / 已引用 / 未引用；溢出菜单提供「全部下载」与「清理未引用」",
+      "压缩开关按次生效并被记住：默认压缩（单张 ≤3MB），关闭则保留原图（单张 ≤10MB）",
+      "删除已被正文引用的附件时会提示同时移除引用；删除笔记会级联删除其附件",
+      "正文以 quickwiki-att:// 引用附件（不再内嵌 base64 图片），本地与云端内容一致；换设备打开时图片按需后台下载回填",
+    ],
+  },
+  {
     icon: <ImageIcon className="h-4 w-4" />,
     title: "图片与富元素",
     items: [
-      "图片：粘贴 / 拖拽 / 工具栏插入；自动压缩（≤1600px、webp、单张 ≤3MB，超限提示）后离线内嵌",
+      "图片：统一由「附件库」管理（见上），正文只存引用，图片本体留在本机，断网也能看",
       "表格：工具栏插入 3×3、列宽拖拽；光标在表格内时「表格操作」菜单增删行/列、删除表格",
       "任务清单：可勾选、Tab 嵌套",
       "链接：对话框插入 / 编辑 / 移除，自动补全 https://，拦截 javascript: 等危险协议",
@@ -83,8 +98,8 @@ const FEATURE_GROUPS: FeatureGroup[] = [
     icon: <Download className="h-4 w-4" />,
     title: "数据导出",
     items: [
-      "单篇导出 .md（含 YAML front matter：标题/时间/标签）",
-      "全量导出 ZIP：每篇一个 .md，内嵌图片抽取为 images/ 目录并改写相对链接",
+      "单篇导出 .md（含 YAML front matter：标题/时间/标签；图片内嵌为 data URL，保持单文件可移植）",
+      "全量导出 ZIP：每篇一个 .md，图片（附件库图片与内嵌图）抽取到 images/ 目录并改写为相对链接",
       "数据存储在浏览器 IndexedDB，请定期导出备份",
     ],
   },
@@ -98,7 +113,7 @@ const FEATURE_GROUPS: FeatureGroup[] = [
       "账号管理（右上角头像菜单 → 账号管理）：查看登录方式、补设/修改密码、绑定 GitHub",
       "同步触发：保存后自动 / 头部刷新按钮手动 / 恢复联网时；其他设备的改动自动推送到本机，无需手动刷新",
       "离线优先：断网继续写本地，恢复后按队列补推；删除会同步到所有设备",
-      "冲突按最后写入胜出，多端数据最终一致；图片自动上传云存储并改写引用",
+      "冲突按最后写入胜出，多端数据最终一致；图片本体自动上传云存储，正文引用保持不变（不改写正文）",
     ],
   },
   {
@@ -146,7 +161,7 @@ export function FeaturesDialog({ open, onOpenChange }: FeaturesDialogProps) {
         <DialogHeader>
           <DialogTitle>QuickWiki 功能清单</DialogTitle>
           <p className="text-xs text-muted-foreground">
-            本地优先的 Markdown 笔记 · 数据存储在浏览器，可完整导出 · 更新于 2026-09-11
+            本地优先的 Markdown 笔记 · 数据存储在浏览器，可完整导出 · 更新于 2026-09-12
           </p>
         </DialogHeader>
 

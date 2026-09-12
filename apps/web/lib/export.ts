@@ -1,5 +1,11 @@
 import type { Note } from "@quickwiki/shared";
+import { ATT_PROTOCOL } from "@quickwiki/shared";
 import { noteRepo } from "@/lib/data/repository";
+import {
+  attachmentRepo,
+  attachmentExt,
+} from "@/lib/data/attachment-repository";
+import { blobToDataUrl } from "@/lib/images";
 
 /**
  * 数据导出：单篇 Markdown / 全量 ZIP。
@@ -29,12 +35,35 @@ function downloadBlob(blob: Blob, filename: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-/** 导出单篇笔记为 .md 文件（图片保持内嵌 data URL，保证单文件可移植） */
+/** 导出单篇笔记为 .md 文件：协议引用内嵌回 data URL，保证单文件可移植 */
 export async function exportNoteAsMarkdown(note: Note): Promise<void> {
-  const blob = new Blob([`${buildFrontMatter(note)}${note.content}\n`], {
+  const content = await inlineAttachmentRefs(note.content);
+  const blob = new Blob([`${buildFrontMatter(note)}${content}\n`], {
     type: "text/markdown;charset=utf-8",
   });
   downloadBlob(blob, `${sanitizeFilename(note.title)}.md`);
+}
+
+/** quickwiki-att:// 引用串：![alt](quickwiki-att://<uuid>) */
+const ATT_REF_RE = new RegExp(
+  `!\\[([^\\]]*)\\]\\(${ATT_PROTOCOL.replace(/[-/\\^$*+?.()|[\\]{}]/g, "\\$&")}([^)\\s]+)\\)`,
+  "g"
+);
+
+/** 把正文中的协议引用解析回 data URL（本地 blob 缺失时保留原样） */
+async function inlineAttachmentRefs(markdown: string): Promise<string> {
+  if (!markdown.includes(ATT_PROTOCOL)) return markdown;
+  const matches = [...markdown.matchAll(ATT_REF_RE)];
+  let result = markdown;
+  for (const match of matches) {
+    const [full, alt, attId] = match;
+    const record = await attachmentRepo.getRecord(attId);
+    if (!record?.blob) continue;
+    const dataUrl = await blobToDataUrl(record.blob);
+    // replaceAll：同一引用串可能出现多次，须全部内嵌
+    result = result.replaceAll(full, `![${alt}](${dataUrl})`);
+  }
+  return result;
 }
 
 /** 生成 YAML front matter（标题/创建时间/标签），便于导入其他工具 */
@@ -67,22 +96,48 @@ const DATA_IMG_RE =
   /!\[([^\]]*)\]\(data:image\/([a-z+.-]+);base64,([A-Za-z0-9+/=]+)\)/g;
 
 interface JSZipLike {
-  file(path: string, data: string, options?: { base64?: boolean }): unknown;
+  file(
+    path: string,
+    data: string | Blob,
+    options?: { base64?: boolean }
+  ): unknown;
 }
 
 /**
- * 把 Markdown 中的 data URL 图片抽取为 ZIP 内 images/<base>-<n>.<ext> 文件，
- * 返回改写为相对路径后的 Markdown；同一图片（相同 data URL）只存一份。
+ * 把 Markdown 中的图片抽取为 ZIP 内 images/<base>-<n>.<ext> 文件，
+ * 返回改写为相对路径后的 Markdown；同一图片（相同附件/相同 data URL）只存一份。
+ * 支持两类来源：附件协议引用（blob 取自附件库）、存量 base64 data URL。
  */
-function extractMarkdownImages(
+async function extractNoteImages(
   markdown: string,
   baseName: string,
   zip: JSZipLike
-): string {
+): Promise<string> {
   const saved = new Map<string, string>();
   let counter = 0;
+  let result = markdown;
 
-  return markdown.replace(
+  // 1) 附件协议引用：blob 从附件库直取
+  const attMatches = [...result.matchAll(ATT_REF_RE)];
+  for (const match of attMatches) {
+    const [full, alt, attId] = match;
+    const relPath = saved.get(attId);
+    if (relPath) {
+      result = result.replaceAll(full, `![${alt}](${relPath})`);
+      continue;
+    }
+    const record = await attachmentRepo.getRecord(attId);
+    if (!record?.blob) continue; // 本地缺 blob：保留原样
+    counter += 1;
+    const ext = attachmentExt(record.mime) === "img" ? extFromFilename(record.filename) : attachmentExt(record.mime);
+    const path = `images/${baseName}-${counter}.${ext}`;
+    zip.file(path, record.blob);
+    saved.set(attId, path);
+    result = result.replaceAll(full, `![${alt}](${path})`);
+  }
+
+  // 2) 存量 base64 data URL（兼容未被附件库覆盖的旧数据）
+  result = result.replace(
     DATA_IMG_RE,
     (match, alt: string, mimeSub: string, payload: string) => {
       const cached = saved.get(payload);
@@ -98,6 +153,14 @@ function extractMarkdownImages(
       return `![${alt}](${relPath})`;
     }
   );
+
+  return result;
+}
+
+/** mime 不在映射表时，从文件名反推扩展名兜底 */
+function extFromFilename(filename: string): string {
+  const ext = filename.includes(".") ? filename.split(".").pop()! : "";
+  return /^[a-z0-9]{1,5}$/i.test(ext) ? ext.toLowerCase() : "img";
 }
 
 /** 导出全部笔记为 ZIP（每篇一个 .md，图片抽取到 images/ 目录） */
@@ -115,7 +178,7 @@ export async function exportAllAsZip(): Promise<number> {
     const seen = usedNames.get(base) ?? 0;
     usedNames.set(base, seen + 1);
     const stem = seen === 0 ? base : `${base}-${seen}`;
-    const markdown = extractMarkdownImages(note.content, stem, zip);
+    const markdown = await extractNoteImages(note.content, stem, zip);
     zip.file(`${stem}.md`, `${buildFrontMatter(note)}${markdown}\n`);
   }
 

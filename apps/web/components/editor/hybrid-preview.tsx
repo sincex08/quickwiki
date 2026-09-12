@@ -7,7 +7,15 @@ import {
   splitMarkdownBlocks,
   joinMarkdownBlocks,
 } from "@/lib/markdown-blocks";
+import { MarkdownImg } from "./markdown-img";
 import { cn } from "@/lib/utils";
+
+/** 协议引用 / 外链 / 存量 data URL 统一解析渲染 */
+const markdownComponents = {
+  img: (props: { src?: string; alt?: string }) => (
+    <MarkdownImg src={props.src} alt={props.alt} />
+  ),
+};
 
 export interface HybridPreviewProps {
   /** 原始 Markdown */
@@ -99,11 +107,15 @@ export function HybridPreview({
             }}
             className="-mx-2 cursor-text rounded-md px-2 transition-colors hover:bg-accent/40 focus:bg-accent/40 focus:outline-none"
           >
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{source}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+              {source}
+            </ReactMarkdown>
           </div>
         ) : (
           <div key={i} className="-mx-2 px-2">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{source}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+              {source}
+            </ReactMarkdown>
           </div>
         )
       )}
