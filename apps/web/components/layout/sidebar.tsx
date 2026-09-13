@@ -59,7 +59,13 @@ export function SidebarContent() {
   };
 
   const selectNotebook = (id: string | null) => {
-    setNotebookFilter(id);
+    // 再次点击已选中的笔记本 = 取消选中，回到「全部笔记」
+    setNotebookFilter(notebookFilter === id ? null : id);
+    goNotes();
+  };
+
+  const selectUncategorized = () => {
+    setNotebookFilter(notebookFilter === "none" ? null : "none");
     goNotes();
   };
 
@@ -179,6 +185,23 @@ export function SidebarContent() {
               </DropdownMenu>
             </div>
           ))}
+
+          {/* 未分类：仅展示不属于任何笔记本的笔记 */}
+          <button
+            type="button"
+            onClick={selectUncategorized}
+            className={cn(
+              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-accent",
+              notebookFilter === "none" && "bg-accent text-accent-foreground"
+            )}
+            title="仅显示不属于任何笔记本的笔记"
+          >
+            <span className="h-2.5 w-2.5 shrink-0 rounded-full border border-dashed border-muted-foreground" />
+            <span className="flex-1 truncate text-left">未分类</span>
+            <span className="text-xs text-muted-foreground">
+              {counts.uncategorized}
+            </span>
+          </button>
         </div>
 
         {/* 标签 */}

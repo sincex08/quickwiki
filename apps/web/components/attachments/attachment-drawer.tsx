@@ -12,6 +12,7 @@ import {
   Pencil,
   Trash2,
   Upload,
+  X,
 } from "lucide-react";
 import type { Note } from "@quickwiki/shared";
 import { ATT_PROTOCOL } from "@quickwiki/shared";
@@ -19,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   Sheet,
+  SheetClose,
   SheetContent,
   SheetHeader,
   SheetTitle,
@@ -43,7 +45,7 @@ import {
   writeCompressPref,
 } from "@/lib/attachments/prefs";
 import {
-  attachmentPublicUrl,
+  attachmentSignedUrl,
   registerBlobUrl,
   useAttachmentImgSrc,
 } from "@/lib/attachments/resolve";
@@ -220,16 +222,35 @@ export function AttachmentDrawer({
     setRenameTarget(null);
   };
 
-  const previewSrc = preview
-    ? preview.blob
-      ? registerBlobUrl(preview.id, preview.blob)
-      : attachmentPublicUrl(preview)
-    : null;
+  // 预览 src：本地 blob 优先；缺 blob 时签发短时效签名 URL（私有桶，
+  // 异步获取），签发失败渲染占位等懒下载回填
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  useEffect(() => {
+    if (!preview) {
+      setPreviewSrc(null);
+      return;
+    }
+    if (preview.blob) {
+      setPreviewSrc(registerBlobUrl(preview.id, preview.blob));
+      return;
+    }
+    let active = true;
+    void attachmentSignedUrl(preview).then((url) => {
+      if (active) setPreviewSrc(url);
+    });
+    return () => {
+      active = false;
+    };
+    // 按 id + blob 身份触发即可；依赖 preview 对象引用会在 records 刷新
+    // （新对象实例）时不必要地重复签名
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preview?.id, preview?.blob]);
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>
       <SheetContent
         side={isMobile ? "bottom" : "right"}
+        hideClose
         className={cn(
           "flex flex-col gap-0 p-0",
           isMobile
@@ -287,6 +308,12 @@ export function AttachmentDrawer({
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+            {/* 关闭抽屉：显式放在「…」右侧，与默认关闭按钮互斥（hideClose） */}
+            <SheetClose asChild>
+              <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="关闭附件抽屉">
+                <X className="h-4 w-4" />
+              </Button>
+            </SheetClose>
           </div>
         </SheetHeader>
 

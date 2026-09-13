@@ -86,9 +86,18 @@ export interface Attachment {
   syncVersion?: number;
 }
 
+/**
+ * 笔记本过滤模式：
+ * - 不传 / `undefined`：不过滤，返回全部笔记（含未分类）
+ * - `"none"`：仅未分类笔记（notebookId 为 null）
+ * - 具体笔记本 id：仅该笔记本下的笔记
+ */
+export type NotebookFilter = string | "none";
+
 /** 列表查询过滤器（分页从第一天支持，避免后期重构） */
 export interface ListFilters {
-  notebookId?: string;
+  /** 见 NotebookFilter 语义说明 */
+  notebookId?: NotebookFilter;
   tag?: string;
   search?: string;
   /** 仅置顶 */

@@ -8,6 +8,7 @@ import {
   HelpCircle,
   LogIn,
   Moon,
+  MoreHorizontal,
   Plus,
   RefreshCw,
   Search,
@@ -69,14 +70,14 @@ function SearchBox() {
   }, [local]);
 
   return (
-    <div className="relative w-full max-w-md">
+    <div className="relative w-full min-w-0 max-w-md">
       <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
       <input
         value={local}
         onChange={(e) => setLocal(e.target.value)}
         placeholder="搜索笔记…"
         aria-label="搜索笔记"
-        className="h-9 w-full rounded-md border border-input bg-background pl-8 pr-8 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="h-9 w-full min-w-0 rounded-md border border-input bg-background pl-8 pr-8 text-base ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:text-sm"
       />
       {local && (
         <button
@@ -138,6 +139,7 @@ function SyncChip() {
       <Button
         variant="ghost"
         size="icon"
+        className="relative"
         title={`${statusText} · 点击立即同步`}
         aria-label="云同步状态"
         disabled={sync.status === "syncing"}
@@ -150,6 +152,13 @@ function SyncChip() {
             sync.status === "error" && "text-destructive"
           )}
         />
+        {/* 常驻错误角标：错误详情在 hover 提示与账号菜单里，不悬停也能注意到 */}
+        {sync.status === "error" && (
+          <span
+            className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-destructive"
+            aria-hidden
+          />
+        )}
       </Button>
 
       {/* 账号模块：下拉含账号管理 / 立即同步 / 退出登录 */}
@@ -228,7 +237,7 @@ export function Header({ onNewNote, onOpenSidebar }: HeaderProps) {
   };
 
   return (
-    <header className="flex h-14 shrink-0 items-center gap-2 border-b bg-background px-3 md:px-4">
+    <header className="flex h-14 shrink-0 items-center gap-1.5 border-b bg-background px-3 md:gap-2 md:px-4">
       {/* 移动端菜单按钮 */}
       <Button
         variant="ghost"
@@ -253,11 +262,12 @@ export function Header({ onNewNote, onOpenSidebar }: HeaderProps) {
         </svg>
       </Button>
 
-      <div className="min-w-0 flex-1 md:flex-initial">
+      {/* 搜索框：占据剩余全部宽度（移动端优先保证可读），桌面端上限 max-w-md */}
+      <div className="min-w-0 flex-1 md:max-w-md">
         <SearchBox />
       </div>
 
-      <div className="ml-auto flex shrink-0 items-center gap-1">
+      <div className="flex shrink-0 items-center gap-0.5 md:gap-1">
         <Button
           size="sm"
           className="hidden gap-1.5 sm:inline-flex"
@@ -277,9 +287,47 @@ export function Header({ onNewNote, onOpenSidebar }: HeaderProps) {
           <Plus className="h-5 w-5" />
         </Button>
 
+        {/* 移动端：导出/功能说明/主题收进「…」，把宽度让给搜索框 */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" aria-label="导出数据" title="导出数据（单篇 Markdown / 全量 ZIP）" disabled={exporting}>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="md:hidden"
+              aria-label="更多"
+              title="更多"
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-44">
+            <DropdownMenuItem disabled={!activeNoteId} onClick={handleExportMarkdown}>
+              导出当前笔记（Markdown）
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={handleExportZip}>
+              {exporting ? "正在打包…" : "导出全部笔记（ZIP）"}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => setFeaturesOpen(true)}>
+              功能说明与快捷键
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={toggleTheme}>
+              {theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        {/* 桌面端：导出 */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="hidden md:inline-flex"
+              aria-label="导出数据"
+              title="导出数据（单篇 Markdown / 全量 ZIP）"
+              disabled={exporting}
+            >
               <Download className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
@@ -301,6 +349,7 @@ export function Header({ onNewNote, onOpenSidebar }: HeaderProps) {
         <Button
           variant="ghost"
           size="icon"
+          className="hidden md:inline-flex"
           onClick={() => setFeaturesOpen(true)}
           aria-label="功能说明"
           title="功能说明与 Markdown 快捷键速查"
@@ -311,6 +360,7 @@ export function Header({ onNewNote, onOpenSidebar }: HeaderProps) {
         <Button
           variant="ghost"
           size="icon"
+          className="hidden md:inline-flex"
           onClick={toggleTheme}
           aria-label="切换主题"
           title="切换浅色 / 深色主题"

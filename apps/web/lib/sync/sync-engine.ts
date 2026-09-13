@@ -1,5 +1,5 @@
 import type { SupabaseClient, RealtimeChannel } from "@supabase/supabase-js";
-import { getSupabase } from "@/lib/supabase/client";
+import { ensureFreshSession, getSupabase } from "@/lib/supabase/client";
 import { db, AUTH_UID_KEY, type AttachmentRecord, type OutboxEntry } from "@/lib/db";
 import { emitChange, subscribe } from "@/lib/events";
 import { debounce } from "@/lib/utils";
@@ -66,6 +66,8 @@ const PULL_PAGE_SIZE = 200;
 const CURSOR_SAFETY_LAG_MS = 2000;
 /** push 冲突（条件删除/覆盖）最大尝试次数 */
 const PUSH_CONFLICT_RETRIES = 3;
+/** outbox 单条连续失败上限：达到后标记 dead 隔离（毒丸不再阻塞同步） */
+const OUTBOX_MAX_ATTEMPTS = 10;
 
 /**
  * 登录/退出时同步 uid 标记；标记变化则整页重载，
@@ -122,6 +124,25 @@ const scheduleRealtimeSync = debounce(() => {
   void syncNow();
 }, 1500);
 
+// ---------- 前台同步（节流） ----------
+
+const FOREGROUND_SYNC_MIN_INTERVAL_MS = 60_000;
+let lastForegroundSyncAt = 0;
+
+/**
+ * 切回前台触发同步（带最小间隔节流）：移动端频繁前后台切换时，
+ * 每次都全量同步会让头部状态反复闪烁、请求堆积。
+ * visibilitychange 与兜底 interval 共用同一份节流预算。
+ */
+function foregroundSync(): void {
+  const now = Date.now();
+  if (now - lastForegroundSyncAt < FOREGROUND_SYNC_MIN_INTERVAL_MS) return;
+  lastForegroundSyncAt = now;
+  void ensureFreshSession().then((ok) => {
+    if (ok) void syncNow();
+  });
+}
+
 // ---------- Realtime 订阅 ----------
 
 let realtimeChannel: RealtimeChannel | null = null;
@@ -164,7 +185,11 @@ function subscribeRealtime(sb: SupabaseClient, userId: string): void {
       },
       () => scheduleRealtimeSync()
     )
-    .subscribe();
+    .subscribe((status) => {
+      // 订阅（含断线重连）成功后兜底拉一次：断连期间的变更没有
+      // postgres_changes 事件可收，只能靠主动 pull 补齐
+      if (status === "SUBSCRIBED") scheduleRealtimeSync();
+    });
 }
 
 function unsubscribeRealtime(sb: SupabaseClient): void {
@@ -186,6 +211,10 @@ export async function initSync(): Promise<void> {
     setState({ status: "disabled" });
     return;
   }
+
+  // 启动时先尝试恢复并续期会话：移动端长时间未打开时 access token 已过期，
+  // 直接读 getSession() 会拿到过期会话进而被误判为未登录。
+  await ensureFreshSession();
 
   const { data } = await sb.auth.getSession();
   setState({
@@ -234,7 +263,24 @@ export async function initSync(): Promise<void> {
   setBlobMissingHandler((id) => queueBlobDownload(id));
 
   if (typeof window !== "undefined") {
-    window.addEventListener("online", () => void syncNow());
+    // 恢复联网：先续期会话再同步——长时间断网后 access token 可能已过期，
+    // 直接 syncNow 会以过期 token 请求而 401 失败
+    window.addEventListener("online", () => {
+      void ensureFreshSession().then(() => void syncNow());
+    });
+    // 移动端浏览器长时间后台后切回前台：access token 可能已过期，
+    // 先续期会话再同步（节流），避免「第二天打开就要重新登录」与频繁切换的请求风暴
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "visible") return;
+      foregroundSync();
+    });
+    // 兜底拉取：移动端后台 WebSocket 会被系统回收且未必有事件可收，
+    // 页面可见期间周期性对账（与 visibilitychange 共用节流）
+    window.setInterval(() => {
+      if (document.visibilityState === "visible" && state.userId) {
+        foregroundSync();
+      }
+    }, FOREGROUND_SYNC_MIN_INTERVAL_MS);
   }
 
   if (state.userId) {
@@ -295,7 +341,13 @@ export async function syncNow(): Promise<void> {
 async function push(sb: SupabaseClient): Promise<string | null> {
   const entries = await db.outbox.orderBy("queuedAt").toArray();
   let lastError: string | null = null;
+  let deadCount = 0;
   for (const entry of entries) {
+    // dead 条目：连续失败达上限的毒丸，跳过（无限重试会卡住整条同步管线）
+    if (entry.dead) {
+      deadCount += 1;
+      continue;
+    }
     try {
       if (entry.kind === "note") {
         await pushNote(sb, entry);
@@ -306,16 +358,25 @@ async function push(sb: SupabaseClient): Promise<string | null> {
       }
       await db.outbox.delete(entry.key);
     } catch (e) {
-      // 队头容错：单条失败保留条目并计数，继续推送后续条目，下轮同步重试
+      // 队头容错：单条失败保留条目并计数，达到上限标记 dead 隔离，
+      // 继续推送后续条目，下轮同步重试
       lastError = e instanceof Error ? e.message : String(e);
+      const attempts = Math.min((entry.attempts ?? 0) + 1, OUTBOX_MAX_ATTEMPTS);
       try {
-        await db.outbox.update(entry.key, {
-          attempts: Math.min((entry.attempts ?? 0) + 1, 99),
-        });
+        await db.outbox.update(
+          entry.key,
+          attempts >= OUTBOX_MAX_ATTEMPTS
+            ? { attempts, dead: true }
+            : { attempts }
+        );
       } catch {
         // 计数失败不影响主流程
       }
     }
+  }
+  if (deadCount > 0) {
+    const deadMsg = `${deadCount} 条变更连续推送失败已达上限，已跳过同步（请检查数据或导出备份）`;
+    lastError = lastError ? `${lastError}；${deadMsg}` : deadMsg;
   }
   return lastError;
 }
@@ -726,10 +787,57 @@ async function pushAttachment(
 // ---------- 拉取 ----------
 
 /**
- * 增量拉取：游标为服务端 server_updated_at（ISO 字符串），与设备时钟无关。
+ * 增量拉取一张表：游标为服务端 server_updated_at（ISO 字符串），与设备时钟无关。
  * 按 server_updated_at 升序 + 分页循环，直到取完（防止 PostgREST max-rows
- * 静默截断）。notes 与 notebooks 共用一个游标（与旧版一致）。
+ * 静默截断）。
+ *
+ * 同一时间戳超过一页的防漏：游标用 (server_updated_at, id) 复合键推进——
+ * 主循环按 gt(ts) 取页，若页满则以「同 ts 的 id > 本页最后一个 id」续页，
+ * 保证同毫秒批量写入（如首次迁移/批量导入）的行不因 gt(ts) 被跳过；
+ * 游标记录最后一个已取行的 (ts, id)，下一轮从 (ts, id] 严格续读。
+ * 返回本表扫到的最大 ts（供游标回退安全窗口计算）。
  */
+async function pullTable(
+  sb: SupabaseClient,
+  table: "notes" | "notebooks" | "attachments",
+  userId: string,
+  from: { ts: string; id: string | null },
+  apply: (row: RemoteRowMeta) => Promise<void>
+): Promise<number> {
+  let maxTs = ts(from.ts);
+  let sinceTs = from.ts;
+  let sinceId = from.id;
+  for (;;) {
+    // 同 ts 的行按 id 升序续页：大于 sinceTs 的行 + 等于 sinceTs 且 id 更大的行
+    let query = sb
+      .from(table)
+      .select("*")
+      .eq("user_id", userId)
+      .order("server_updated_at", { ascending: true })
+      .order("id", { ascending: true })
+      .limit(PULL_PAGE_SIZE);
+    query = sinceId
+      ? query.or(
+          `server_updated_at.gt.${sinceTs},and(server_updated_at.eq.${sinceTs},id.gt.${sinceId})`
+        )
+      : query.gt("server_updated_at", sinceTs);
+    const res = await query;
+    if (res.error) throw new Error(res.error.message);
+    const rows = (res.data ?? []) as RemoteRowMeta[];
+    for (const row of rows) {
+      await apply(row);
+    }
+    if (rows.length === 0) break;
+    const last = rows[rows.length - 1];
+    const lastTs = ts(last.server_updated_at);
+    if (lastTs > maxTs) maxTs = lastTs;
+    sinceTs = last.server_updated_at;
+    sinceId = last.id;
+    if (rows.length < PULL_PAGE_SIZE) break;
+  }
+  return maxTs;
+}
+
 async function pull(sb: SupabaseClient): Promise<void> {
   const userId = state.userId!;
   const cursorKey = `sync.lastPull:${userId}`;
@@ -739,34 +847,24 @@ async function pull(sb: SupabaseClient): Promise<void> {
   const prevCursorTs = ts(cursor);
   let maxTs = prevCursorTs;
 
+  // 复合游标存在时用 (ts,id] 严格续读；旧版纯时间戳游标从该 ts 之后全取
+  // （同 ts 未读行会被重复拉取，applyRemote 幂等，无害）
+  const pairKey = `sync.lastPullPair:${userId}`;
+  const pairMeta = await db.meta.get(pairKey);
+  const pair =
+    pairMeta?.value && typeof pairMeta.value === "object"
+      ? (pairMeta.value as { ts: string; id: string | null })
+      : { ts: cursor, id: null };
+
   for (const table of ["notes", "notebooks"] as const) {
-    let since = cursor;
-    for (;;) {
-      const res = await sb
-        .from(table)
-        .select("*")
-        .eq("user_id", userId)
-        .gt("server_updated_at", since)
-        .order("server_updated_at", { ascending: true })
-        .limit(PULL_PAGE_SIZE);
-      if (res.error) throw new Error(res.error.message);
-      const rows = (res.data ?? []) as Array<RemoteNote | RemoteNotebook>;
-      for (const row of rows) {
-        if (table === "notes") {
-          await applyRemoteNote(row as RemoteNote);
-        } else {
-          await applyRemoteNotebook(row as RemoteNotebook);
-        }
+    const tableMax = await pullTable(sb, table, userId, pair, async (row) => {
+      if (table === "notes") {
+        await applyRemoteNote(row as RemoteNote);
+      } else {
+        await applyRemoteNotebook(row as RemoteNotebook);
       }
-      if (rows.length > 0) {
-        const lastTs = ts(rows[rows.length - 1].server_updated_at);
-        if (lastTs > maxTs) maxTs = lastTs;
-      }
-      if (rows.length < PULL_PAGE_SIZE) break;
-      const nextSince = rows[rows.length - 1].server_updated_at;
-      if (ts(nextSince) <= ts(since)) break; // 防御：游标无法推进（理论不可达）
-      since = nextSince;
-    }
+    });
+    if (tableMax > maxTs) maxTs = tableMax;
   }
 
   // 游标只前进：maxTs 回退安全窗口后仍不得小于上一轮游标
@@ -775,6 +873,7 @@ async function pull(sb: SupabaseClient): Promise<void> {
     key: cursorKey,
     value: new Date(nextCursorTs).toISOString(),
   });
+  await db.meta.put({ key: pairKey, value: pair });
 
   // 附件独立游标：元数据先行，blob 缺失由懒下载回填
   const attCursorKey = `sync.lastPullAtt:${userId}`;
@@ -782,37 +881,30 @@ async function pull(sb: SupabaseClient): Promise<void> {
   const attCursor =
     typeof attMeta?.value === "string" ? attMeta.value : EPOCH_CURSOR;
   const attPrevTs = ts(attCursor);
-  let attMaxTs = attPrevTs;
 
-  let attSince = attCursor;
-  for (;;) {
-    const res = await sb
-      .from("attachments")
-      .select("*")
-      .eq("user_id", userId)
-      .gt("server_updated_at", attSince)
-      .order("server_updated_at", { ascending: true })
-      .limit(PULL_PAGE_SIZE);
-    if (res.error) throw new Error(res.error.message);
-    const rows = (res.data ?? []) as RemoteAttachment[];
-    for (const row of rows) {
-      await applyRemoteAttachment(row);
+  const attPairKey = `sync.lastPullAttPair:${userId}`;
+  const attPairMeta = await db.meta.get(attPairKey);
+  const attPair =
+    attPairMeta?.value && typeof attPairMeta.value === "object"
+      ? (attPairMeta.value as { ts: string; id: string | null })
+      : { ts: attCursor, id: null };
+
+  const attMaxTs = await pullTable(
+    sb,
+    "attachments",
+    userId,
+    attPair,
+    async (row) => {
+      await applyRemoteAttachment(row as RemoteAttachment);
     }
-    if (rows.length > 0) {
-      const lastTs = ts(rows[rows.length - 1].server_updated_at);
-      if (lastTs > attMaxTs) attMaxTs = lastTs;
-    }
-    if (rows.length < PULL_PAGE_SIZE) break;
-    const nextSince = rows[rows.length - 1].server_updated_at;
-    if (ts(nextSince) <= ts(attSince)) break;
-    attSince = nextSince;
-  }
+  );
 
   const attNextTs = Math.max(attPrevTs, attMaxTs - CURSOR_SAFETY_LAG_MS);
   await db.meta.put({
     key: attCursorKey,
     value: new Date(attNextTs).toISOString(),
   });
+  await db.meta.put({ key: attPairKey, value: attPair });
 }
 
 async function applyRemoteNote(row: RemoteNote, force = false): Promise<void> {
@@ -890,7 +982,41 @@ async function applyRemoteNotebook(
       }
       await db.notebooks.delete(row.id);
       await db.outbox.delete(`notebook:${row.id}`);
+
+      // 与本地删除路径（notebookRepo.delete）保持一致：摘除笔记归属并刷新
+      // 时间戳。否则这些笔记既不出现在任何笔记本也不属于「未分类」，且后续
+      // 推送会携带指向已删笔记本的 notebook_id——服务端墓碑被硬删后 FK 报错
+      // 导致该条目无限重试。
+      const affectedIds = (await db.notes
+        .where("notebookId")
+        .equals(row.id)
+        .primaryKeys()) as string[];
+      if (affectedIds.length > 0) {
+        const movedAt = Date.now();
+        await db.notes
+          .where("notebookId")
+          .equals(row.id)
+          .modify((note) => {
+            note.notebookId = null;
+            note.updatedAt = movedAt;
+          });
+        // applyingRemote 期间事件不入队，需手动写入 outbox 推平服务端的
+        // 残留 notebook_id；事件仅用于刷新 UI
+        await db.outbox.bulkPut(
+          affectedIds.map((id) => ({
+            key: `note:${id}`,
+            kind: "note" as const,
+            entityId: id,
+            deleted: false,
+            queuedAt: Date.now(),
+          }))
+        );
+        scheduleSync();
+      }
       emitChange("notebooks", { type: "delete", ids: [row.id] });
+      if (affectedIds.length > 0) {
+        emitChange("notes", { type: "update", ids: affectedIds });
+      }
       return;
     }
     if (!force) {
@@ -1010,9 +1136,21 @@ async function downloadBlobForAttachment(id: string): Promise<void> {
     if (!record || record.blob) return;
 
     const path = `${userId}/${record.noteId}/${record.id}.${attachmentExt(record.mime)}`;
-    const { data } = sb.storage.from("note-images").getPublicUrl(path);
-    const res = await fetch(data.publicUrl);
-    if (!res.ok) return; // 对端尚未上传完成等情况：等下次渲染触发重试
+    // 私有桶：签名 URL 短时效访问（getPublicUrl 对私有桶返回 404 链接）。
+    // 首次 404/过期重试一次：对端可能尚未上传完成
+    const { data, error } = await sb.storage
+      .from("note-images")
+      .createSignedUrl(path, 60);
+    if (error || !data) return;
+    let res = await fetch(data.signedUrl);
+    if (!res.ok) {
+      const retry = await sb.storage
+        .from("note-images")
+        .createSignedUrl(path, 60);
+      if (retry.error || !retry.data) return;
+      res = await fetch(retry.data.signedUrl);
+    }
+    if (!res.ok) return; // 仍失败：等下次渲染触发重试
     const blob = await res.blob();
     if (blob.size === 0) return;
 

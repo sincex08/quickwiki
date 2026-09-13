@@ -47,17 +47,21 @@ function FilterChips() {
   const { notebooks } = useNotebooks();
 
   const notebook = notebooks.find((n) => n.id === notebookFilter);
-  if (!notebook && !tagFilter) return null;
+  const uncategorized = notebookFilter === "none";
+  if (!notebook && !uncategorized && !tagFilter) return null;
 
   return (
     <div className="flex flex-wrap gap-1.5 px-3 pt-3">
-      {notebook && (
+      {(notebook || uncategorized) && (
         <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs">
           <span
-            className="h-2 w-2 rounded-full"
-            style={{ backgroundColor: notebook.color }}
+            className={cn(
+              "h-2 w-2 rounded-full",
+              uncategorized && "border border-dashed border-muted-foreground"
+            )}
+            style={notebook ? { backgroundColor: notebook.color } : undefined}
           />
-          {notebook.name}
+          {notebook ? notebook.name : "未分类"}
           <button
             type="button"
             aria-label="清除笔记本过滤"
@@ -146,6 +150,12 @@ export function NoteListPane() {
       <FilterChips />
 
       <div className="min-h-0 flex-1 overflow-y-auto">
+        {/* 搜索是全局的：结果可能落在当前笔记本/标签过滤之外，明示避免误解 */}
+        {isSearching && !listLoading && notes.length > 0 && (
+          <p className="px-3 pt-3 text-xs text-muted-foreground">
+            全局搜索：结果不限于当前笔记本 / 标签过滤
+          </p>
+        )}
         {listLoading ? (
           <div className="space-y-2 p-3">
             {Array.from({ length: 6 }).map((_, i) => (

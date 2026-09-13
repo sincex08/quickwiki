@@ -29,8 +29,10 @@ export interface OutboxEntry {
   entityId: string;
   deleted: boolean;
   queuedAt: number;
-  /** 连续推送失败次数（仅统计用途，非索引字段，无需升库版本） */
+  /** 连续推送失败次数（达到上限标记 dead，非索引字段，无需升库版本） */
   attempts?: number;
+  /** 毒丸隔离：连续失败达上限后置位，push 跳过（防止无限重试卡住同步） */
+  dead?: boolean;
 }
 
 /** 附件完整记录：元数据 + 二进制（IndexedDB 结构化克隆原生支持 Blob 内联）。
@@ -90,4 +92,38 @@ db.version(3).stores({
 /** v4：附件表（图片唯一来源，blob 内联；升级只建 store，无数据搬运） */
 db.version(4).stores({
   attachments: "id, noteId, createdAt, [noteId+hash]",
+});
+
+/**
+ * v5：notes 派生索引 cat（notebookId ?? ""）。
+ * IndexedDB 索引不收录 null/undefined，「仅未分类」过滤此前只能全表扫描；
+ * 派生为空字符串后走索引。cat 由下方 CRUD hook 在所有写入路径自动维护。
+ */
+db.version(5)
+  .stores({
+    notes: "id, notebookId, cat, createdAt, updatedAt, pinned",
+  })
+  .upgrade(async (tx) => {
+    await tx
+      .table("notes")
+      .toCollection()
+      .modify((note) => {
+        (note as { cat?: string }).cat =
+          (note as { notebookId?: string | null }).notebookId ?? "";
+      });
+  });
+
+// 派生字段维护：cat 只依赖 notebookId，create/update/modify/put 全路径生效。
+// hook 订阅者参数类型须与 Dexie 的 TableHooks 声明一致（Object），否则
+// 严格函数类型检查下 overload 不匹配
+db.notes.hook("creating", (_key: string, note: Note) => {
+  (note as Note & { cat?: string }).cat = note.notebookId ?? "";
+});
+db.notes.hook("updating", (mods: object) => {
+  if ("notebookId" in mods) {
+    const notebookId = (mods as { notebookId?: string | null }).notebookId;
+    if (notebookId !== undefined) {
+      return { ...mods, cat: notebookId ?? "" };
+    }
+  }
 });

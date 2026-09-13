@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { NotebookFilter } from "@quickwiki/shared";
 
 /** 编辑器三模式 */
 export type EditorMode = "edit" | "source" | "preview";
@@ -29,8 +30,13 @@ function readListTitleOnlyDefault(): boolean {
  * 数据本身存在 IndexedDB，这里只保存视图状态。
  */
 interface UIState {
-  /** 当前笔记本过滤，null = 全部 */
-  notebookFilter: string | null;
+  /**
+   * 当前笔记本过滤：
+   * - null = 全部笔记（含未分类）
+   * - "none" = 仅未分类（不属于任何笔记本）
+   * - 具体 id = 该笔记本下的笔记
+   */
+  notebookFilter: NotebookFilter | null;
   /** 当前标签过滤，null = 全部 */
   tagFilter: string | null;
   /** 当前打开的笔记（编辑器展示） */
@@ -50,7 +56,7 @@ interface UIState {
   /** 源码视图重挂载计数：抽屉等外部路径改写正文后 bump，刷新 textarea 内容 */
   sourceNonce: number;
 
-  setNotebookFilter: (id: string | null) => void;
+  setNotebookFilter: (id: NotebookFilter | null) => void;
   setTagFilter: (tag: string | null) => void;
   openNote: (id: string | null) => void;
   setSearchQuery: (q: string) => void;

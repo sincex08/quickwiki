@@ -25,6 +25,8 @@ export interface CreateNoteInput {
 
 export interface NoteCounts {
   all: number;
+  /** 未分类（不属于任何笔记本）的笔记数 */
+  uncategorized: number;
   byNotebook: Record<string, number>;
 }
 
@@ -197,6 +199,17 @@ class IndexedDBNoteRepository implements NoteRepository {
       rows = noteIds.length > 0 ? await db.notes.bulkGet(noteIds).then(
         (list) => list.filter((n): n is Note => Boolean(n))
       ) : [];
+      // 标签与笔记本过滤叠加（含「仅未分类」），否则先选笔记本再点标签时
+      // 两枚过滤芯片都在，结果却只按标签跨笔记本过滤
+      if (filters.notebookId === "none") {
+        rows = rows.filter((n) => n.notebookId == null);
+      } else if (filters.notebookId) {
+        rows = rows.filter((n) => n.notebookId === filters.notebookId);
+      }
+    } else if (filters.notebookId === "none") {
+      // 仅未分类：派生索引 cat（notebookId ?? ""）——IndexedDB 索引不收录
+      // null，直接 equals(null) 查不到任何行，全表扫描也随数据量劣化
+      rows = await db.notes.where("cat").equals("").toArray();
     } else if (filters.notebookId) {
       rows = await db.notes.where("notebookId").equals(filters.notebookId).toArray();
     } else {
@@ -223,14 +236,20 @@ class IndexedDBNoteRepository implements NoteRepository {
   }
 
   async counts(): Promise<NoteCounts> {
-    const notes = await db.notes.toArray();
+    // 走 cat 派生索引的 count 查询，避免随笔记量线性劣化的全表加载。
+    // byNotebook 只统计现存笔记本（孤儿引用不入角标，与侧边栏展示一致）
+    const [all, uncategorized, notebooks] = await Promise.all([
+      db.notes.count(),
+      db.notes.where("cat").equals("").count(),
+      db.notebooks.toArray(),
+    ]);
     const byNotebook: Record<string, number> = {};
-    for (const note of notes) {
-      if (note.notebookId) {
-        byNotebook[note.notebookId] = (byNotebook[note.notebookId] ?? 0) + 1;
-      }
-    }
-    return { all: notes.length, byNotebook };
+    await Promise.all(
+      notebooks.map(async (nb) => {
+        byNotebook[nb.id] = await db.notes.where("cat").equals(nb.id).count();
+      })
+    );
+    return { all, uncategorized, byNotebook };
   }
 }
 

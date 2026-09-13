@@ -13,13 +13,14 @@ import type {
   ListFilters,
   Note,
   Notebook,
+  NotebookFilter,
   Paginated,
   Tag,
 } from "@quickwiki/shared";
 import { DEFAULT_PAGE_SIZE } from "@quickwiki/shared";
 
 export interface NotesFilters {
-  notebookId?: string | null;
+  notebookId?: NotebookFilter | null;
   tag?: string | null;
 }
 
@@ -155,12 +156,14 @@ export function useTags() {
 
 export interface NoteCountsResult {
   all: number;
+  uncategorized: number;
   byNotebook: Record<string, number>;
 }
 
 export function useNoteCounts() {
   const [counts, setCounts] = useState<NoteCountsResult>({
     all: 0,
+    uncategorized: 0,
     byNotebook: {},
   });
 

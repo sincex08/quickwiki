@@ -42,6 +42,28 @@
 - 真正写冲突时的裁决含跨时钟启发式比较（本地编辑时间 vs 服务端时间），常规路径已不依赖设备时钟
 - 附件 blob 为不可变内容，无同步冲突；第二台设备元数据先行、blob 按需懒下载回填本地，离线可看
 
+### 会话保持（2026-09-13 加固）
+
+移动端「第二天打开要重新登录」的两类成因与对策：
+
+1. **客户端侧（已在代码中修复）**
+   - `lib/supabase/client.ts` 显式配置 auth：`persistSession` / `autoRefreshToken` /
+     `detectSessionInUrl`、`flowType: "pkce"`（比 implicit 更能抵御移动端 URL fragment 丢失）、
+     固定 `storageKey: "quickwiki-auth"` 防止不同预览域名互相覆盖。
+     注意**不要**传自定义 `lock`：客户端库已内置单飞刷新，自定义 lock 会退化到旧兼容路径。
+   - 新增 `ensureFreshSession()`：启动时与页面重新可见（`visibilitychange`）时，
+     若 access token 已过期（留 60s 余量）则主动 `refreshSession()`，续期成功再同步。
+   - Service Worker（`public/sw.js`，v2）**不再缓存** `/login`、`/account` 以及带
+     `code` / `error` 参数的导航：否则 Magic Link / OAuth 回跳会被缓存页吞掉，
+     导致会话无法建立。
+2. **服务端侧（需在 Supabase 控制台确认，代码无法覆盖）**
+   - Auth → Sessions：**JWT 有效期**默认 3600s（1 小时）。有 `autoRefreshToken` +
+     `ensureFreshSession` 时保持默认即可；不建议低于 5 分钟。
+   - **不要开启** Time-box / Inactivity timeout / Single session per user：
+     这三项（Pro 计划起）会强制缩短会话寿命，是「隔天掉登录」最常见的配置原因。
+   - 若开启过上述任一项，会话的实际寿命 = 配置超时 + JWT 有效期，改回后需等下一次
+     刷新才生效。
+
 ### 免费版防暂停保活（已内置）
 
 - Supabase 免费项目 **7 天无 API 请求会自动暂停**；打开应用即产生活动（同步），

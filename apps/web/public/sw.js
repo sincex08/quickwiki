@@ -7,9 +7,11 @@
  * - 静态资源（_next/、图片、字体）：缓存优先 + 后台更新，加快二次加载。
  */
 
-const VERSION = "v1";
+const VERSION = "v2";
 const STATIC_CACHE = `quickwiki-static-${VERSION}`;
 const RUNTIME_CACHE = `quickwiki-runtime-${VERSION}`;
+/** 运行时缓存条目上限：_next chunk 随构建换名会持续累积，FIFO 淘汰最旧 */
+const MAX_RUNTIME_ENTRIES = 300;
 
 const PRECACHE_URLS = ["/", "/manifest.json", "/icon.svg"];
 
@@ -37,6 +39,23 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+/** 写入运行时缓存并按 FIFO 裁剪到上限（trim 在后台执行，不阻塞响应） */
+function cacheAndTrim(request, response, event) {
+  const copy = response.clone();
+  event.waitUntil(
+    caches.open(RUNTIME_CACHE).then(async (cache) => {
+      await cache.put(request, copy);
+      const keys = await cache.keys();
+      if (keys.length <= MAX_RUNTIME_ENTRIES) return;
+      await Promise.all(
+        keys.slice(0, keys.length - MAX_RUNTIME_ENTRIES).map((key) =>
+          cache.delete(key)
+        )
+      );
+    })
+  );
+}
+
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   if (request.method !== "GET") return;
@@ -46,11 +65,19 @@ self.addEventListener("fetch", (event) => {
 
   // 页面导航：网络优先 + 缓存兜底（离线访问已访问过的页面）
   if (request.mode === "navigate") {
+    // 登录页与带 auth 回调参数的导航永不缓存：否则会返回旧的登录页外壳，
+    // 或让 Magic Link / OAuth 的 code 参数被缓存页面吞掉，导致会话无法建立。
+    const isAuthFlow =
+      url.pathname.startsWith("/login") ||
+      url.pathname.startsWith("/account") ||
+      url.searchParams.has("code") ||
+      url.searchParams.has("error");
+    if (isAuthFlow) return; // 交给浏览器直连网络
+
     event.respondWith(
       fetch(request)
         .then((response) => {
-          const copy = response.clone();
-          caches.open(RUNTIME_CACHE).then((cache) => cache.put(request, copy));
+          cacheAndTrim(request, response, event);
           return response;
         })
         .catch(async () => {
@@ -71,8 +98,7 @@ self.addEventListener("fetch", (event) => {
       const network = fetch(request)
         .then((response) => {
           if (response && response.ok) {
-            const copy = response.clone();
-            caches.open(RUNTIME_CACHE).then((cache) => cache.put(request, copy));
+            cacheAndTrim(request, response, event);
           }
           return response;
         })

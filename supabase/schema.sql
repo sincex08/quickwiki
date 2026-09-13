@@ -174,15 +174,20 @@ create policy attachments_own on public.attachments
 
 -- ---------- 图片存储桶（note-images） ----------
 -- 对象路径约定：note-images/<user_id>/<note_id>/<attachment_id>.<ext>
--- 读公开（markdown 内直接引用），写仅限本人目录
+-- 私有桶：读写都仅限本人目录；渲染兜底走短时效签名 URL（客户端已改造），
+-- 正文懒下载回填本地 blob 后不再依赖签名链接
 
 insert into storage.buckets (id, name, public)
-values ('note-images', 'note-images', true)
-on conflict (id) do nothing;
+values ('note-images', 'note-images', false)
+on conflict (id) do update set public = false;
 
 drop policy if exists note_images_read on storage.objects;
 create policy note_images_read on storage.objects
-  for select using (bucket_id = 'note-images');
+  for select to authenticated
+  using (
+    bucket_id = 'note-images'
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
 
 drop policy if exists note_images_write_own on storage.objects;
 create policy note_images_write_own on storage.objects

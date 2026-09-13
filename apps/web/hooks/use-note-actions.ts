@@ -13,7 +13,10 @@ export function useNoteActions() {
   const activeNoteId = useUIStore((s) => s.activeNoteId);
 
   const createNote = useCallback(async () => {
-    const id = await noteRepo.create({ notebookId: notebookFilter ?? null });
+    // "none" 是「仅未分类」这一视图过滤条件，不是笔记本 id：此时新建笔记应为未分类
+    const notebookId =
+      notebookFilter && notebookFilter !== "none" ? notebookFilter : null;
+    const id = await noteRepo.create({ notebookId });
     openNote(id);
     // 仅从其他页面创建时跳转；已在 /notes 时跳转会堆叠历史记录并与 URL 同步竞争
     if (typeof window !== "undefined" && window.location.pathname !== "/notes") {
