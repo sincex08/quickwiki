@@ -1,11 +1,11 @@
-import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
+"use client";
+
+import { useEffect, useRef } from "react";
 import type { Note } from "@quickwiki/shared";
 import { NoteCard } from "./note-card";
 
 interface NoteListProps {
   notes: Note[];
-  loading: boolean;
   hasMore: boolean;
   onLoadMore: () => void;
   activeNoteId: string | null;
@@ -18,7 +18,6 @@ interface NoteListProps {
 
 export function NoteList({
   notes,
-  loading,
   hasMore,
   onLoadMore,
   activeNoteId,
@@ -27,19 +26,30 @@ export function NoteList({
   onTogglePin,
   onRequestDelete,
 }: NoteListProps) {
-  if (loading) {
-    return (
-      <div className="space-y-2 p-3" aria-label="加载中">
-        {Array.from({ length: 6 }).map((_, i) => (
-          <div key={i} className="rounded-lg border p-3">
-            <Skeleton className="h-4 w-2/3" />
-            <Skeleton className="mt-2 h-3 w-full" />
-            <Skeleton className="mt-1 h-3 w-1/2" />
-          </div>
-        ))}
-      </div>
+  // 滚动到底自动加载：哨兵进入视口（含 200px 预读）触发下一页。
+  // pendingRef 保证一批数据回来前不重复触发（loadMore 是纯 setLimit，可重入）
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const pendingRef = useRef(false);
+
+  useEffect(() => {
+    pendingRef.current = false;
+  }, [notes.length]);
+
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || !hasMore) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && !pendingRef.current) {
+          pendingRef.current = true;
+          onLoadMore();
+        }
+      },
+      { rootMargin: "200px" }
     );
-  }
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasMore, onLoadMore]);
 
   return (
     <div className="space-y-2 p-3">
@@ -54,16 +64,7 @@ export function NoteList({
           onDelete={() => onRequestDelete(note)}
         />
       ))}
-      {hasMore && (
-        <Button
-          variant="ghost"
-          size="sm"
-          className="w-full text-muted-foreground"
-          onClick={onLoadMore}
-        >
-          加载更多
-        </Button>
-      )}
+      {hasMore && <div ref={sentinelRef} aria-hidden className="h-1" />}
     </div>
   );
 }

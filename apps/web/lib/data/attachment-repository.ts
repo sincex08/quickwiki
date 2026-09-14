@@ -59,6 +59,8 @@ export interface AttachmentRepository {
   deleteByIds(ids: string[]): Promise<string[]>;
   /** 删除某笔记全部附件（本地），返回被删 id 列表（供同步墓碑入队） */
   deleteByNote(noteId: string): Promise<string[]>;
+  /** 撤销删除：按原记录恢复附件（含 blob），updatedAt 刷新为当前时间 */
+  restore(records: AttachmentRecord[]): Promise<void>;
   findById(id: string): Promise<Attachment | null>;
   /** 含 blob 的完整记录（渲染 / 导出 / 同步上传用） */
   getRecord(id: string): Promise<AttachmentRecord | null>;
@@ -142,6 +144,17 @@ class IndexedDBAttachmentRepository implements AttachmentRepository {
       emitChange("attachments", { type: "delete", ids });
     }
     return ids;
+  }
+
+  async restore(records: AttachmentRecord[]): Promise<void> {
+    if (records.length === 0) return;
+    const existing = await db.attachments.bulkGet(records.map((r) => r.id));
+    const missing = records.filter((_, i) => !existing[i]);
+    if (missing.length === 0) return;
+    await db.attachments.bulkPut(
+      missing.map((r) => ({ ...r, updatedAt: Date.now() }))
+    );
+    emitChange("attachments", { type: "create", ids: missing.map((r) => r.id) });
   }
 
   async findById(id: string): Promise<Attachment | null> {

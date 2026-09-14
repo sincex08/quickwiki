@@ -43,7 +43,6 @@ import { cn } from "@/lib/utils";
 function SearchBox() {
   const searchQuery = useUIStore((s) => s.searchQuery);
   const setSearchQuery = useUIStore((s) => s.setSearchQuery);
-  const setTagFilter = useUIStore((s) => s.setTagFilter);
   const openNote = useUIStore((s) => s.openNote);
   const [local, setLocal] = useState(searchQuery);
 
@@ -55,13 +54,10 @@ function SearchBox() {
     const timer = setTimeout(() => {
       if (local !== searchQuery) {
         setSearchQuery(local);
-        // 搜索时清除标签过滤，避免叠加造成困惑
-        if (local) {
-          setTagFilter(null);
+        // 搜索是全局的：笔记本/标签过滤不参与搜索结果，但保持原样以便清空搜索后回到过滤视图
+        if (local && typeof window !== "undefined" && window.innerWidth < 768) {
           // 移动端列表栏在打开笔记时隐藏，搜索时退回列表以展示结果
-          if (typeof window !== "undefined" && window.innerWidth < 768) {
-            openNote(null);
-          }
+          openNote(null);
         }
       }
     }, 200);
@@ -267,7 +263,9 @@ export function Header({ onNewNote, onOpenSidebar }: HeaderProps) {
         <SearchBox />
       </div>
 
-      <div className="flex shrink-0 items-center gap-0.5 md:gap-1">
+      {/* ml-auto：搜索框在桌面端有 max-w-md 封顶，不自动撑满，
+          必须由按钮组吸收剩余空间，否则会停在页中部 */}
+      <div className="ml-auto flex shrink-0 items-center gap-0.5 md:gap-1">
         <Button
           size="sm"
           className="hidden gap-1.5 sm:inline-flex"

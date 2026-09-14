@@ -38,11 +38,13 @@ function TitleOnlyToggle() {
   );
 }
 
-/** 当前过滤条件提示（可清除） */
+/** 当前过滤条件展示。
+ *  笔记本为当前「位置」而非临时筛选：以醒目标题呈现，
+ *  不可在此清除/编辑，切换与返回全部笔记一律走左栏；
+ *  标签是叠加的临时筛选，保留 chip + 可清除。 */
 function FilterChips() {
   const notebookFilter = useUIStore((s) => s.notebookFilter);
   const tagFilter = useUIStore((s) => s.tagFilter);
-  const setNotebookFilter = useUIStore((s) => s.setNotebookFilter);
   const setTagFilter = useUIStore((s) => s.setTagFilter);
   const { notebooks } = useNotebooks();
 
@@ -51,26 +53,20 @@ function FilterChips() {
   if (!notebook && !uncategorized && !tagFilter) return null;
 
   return (
-    <div className="flex flex-wrap gap-1.5 px-3 pt-3">
+    <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b px-3 py-2">
       {(notebook || uncategorized) && (
-        <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs">
+        <div className="flex min-w-0 items-center gap-2">
           <span
             className={cn(
-              "h-2 w-2 rounded-full",
+              "h-2.5 w-2.5 shrink-0 rounded-full",
               uncategorized && "border border-dashed border-muted-foreground"
             )}
             style={notebook ? { backgroundColor: notebook.color } : undefined}
           />
-          {notebook ? notebook.name : "未分类"}
-          <button
-            type="button"
-            aria-label="清除笔记本过滤"
-            className="rounded-full p-0.5 hover:bg-accent"
-            onClick={() => setNotebookFilter(null)}
-          >
-            <X className="h-3 w-3" />
-          </button>
-        </span>
+          <span className="truncate text-sm font-semibold">
+            {notebook ? notebook.name : "未分类"}
+          </span>
+        </div>
       )}
       {tagFilter && (
         <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs">
@@ -183,7 +179,6 @@ export function NoteListPane() {
         ) : (
           <NoteList
             notes={notes}
-            loading={false}
             hasMore={!isSearching && hasMore}
             onLoadMore={loadMore}
             activeNoteId={activeNoteId}

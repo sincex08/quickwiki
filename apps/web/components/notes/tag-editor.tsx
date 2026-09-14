@@ -9,10 +9,12 @@ import { ConfirmDialog } from "@/components/common/confirm-dialog";
 interface TagEditorProps {
   tags: string[];
   onChange: (tags: string[]) => void;
+  /** 挂载时聚焦输入框（从折叠入口展开时使用） */
+  autoFocus?: boolean;
 }
 
 /** 编辑器内的标签编辑：回车/逗号添加；退格不删除，仅点 × 并二次确认后移除 */
-export function TagEditor({ tags, onChange }: TagEditorProps) {
+export function TagEditor({ tags, onChange, autoFocus = false }: TagEditorProps) {
   const [input, setInput] = useState("");
   const [pendingRemove, setPendingRemove] = useState<string | null>(null);
 
@@ -54,6 +56,7 @@ export function TagEditor({ tags, onChange }: TagEditorProps) {
       ))}
       <input
         value={input}
+        autoFocus={autoFocus}
         onChange={(e) => setInput(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === ",") {

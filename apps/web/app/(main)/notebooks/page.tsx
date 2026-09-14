@@ -19,12 +19,14 @@ import { EmptyState } from "@/components/notes/empty-state";
 import { useNotebooks, useNoteCounts } from "@/hooks/use-data";
 import { useUIStore } from "@/stores/use-ui-store";
 import { notebookRepo } from "@/lib/data/repository";
+import { cn } from "@/lib/utils";
 import { NOTEBOOK_COLORS } from "@quickwiki/shared";
 
 export default function NotebooksPage() {
   const router = useRouter();
   const { notebooks, loading } = useNotebooks();
   const counts = useNoteCounts();
+  const notebookFilter = useUIStore((s) => s.notebookFilter);
   const setNotebookFilter = useUIStore((s) => s.setNotebookFilter);
 
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -78,7 +80,10 @@ export default function NotebooksPage() {
             {notebooks.map((nb) => (
               <div
                 key={nb.id}
-                className="group relative rounded-lg border bg-card p-4 transition-colors hover:border-primary/40"
+                className={cn(
+                  "group relative rounded-lg border bg-card p-4 transition-colors hover:border-primary/40",
+                  notebookFilter === nb.id && "border-primary ring-1 ring-primary/30"
+                )}
               >
                 <button
                   type="button"

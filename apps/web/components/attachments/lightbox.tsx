@@ -49,7 +49,11 @@ export function Lightbox({ src, alt, onClose }: LightboxProps) {
       role="dialog"
       aria-modal="true"
       aria-label={alt || "图片预览"}
-      className="fixed inset-0 z-[100] flex items-center justify-center overscroll-contain bg-black/90 p-4 animate-in fade-in duration-200"
+      className="pointer-events-auto fixed inset-0 z-[100] flex items-center justify-center overscroll-contain bg-black/90 p-4 animate-in fade-in duration-200"
+      // 本组件挂在 body 上，而 Radix 模态（抽屉等）打开时 react-remove-scroll
+      // 会给 body 加 pointer-events:none（仅恢复自身弹层的交互）。
+      // 不显式声明 pointer-events:auto 的话，本层会被命中测试跳过，
+      // 点击穿透到底下的抽屉按钮上。
       // 关闭逻辑放在按下阶段：预览层出现前若已有按压，click 会被下层元素捕获
       onPointerDown={(e) => {
         // 仅当按压起点就在遮罩自身（而非图片/按钮）时才关闭
@@ -86,6 +90,7 @@ export function Lightbox({ src, alt, onClose }: LightboxProps) {
         src={src}
         alt={alt ?? ""}
         className="max-h-full max-w-full select-none object-contain"
+        draggable={false}
         onPointerDown={stop}
         onClick={stop}
       />

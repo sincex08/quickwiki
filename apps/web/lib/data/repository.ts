@@ -34,6 +34,8 @@ export interface NoteRepository {
   create(input: CreateNoteInput): Promise<string>;
   update(id: string, updates: Partial<Note>): Promise<void>;
   delete(id: string): Promise<void>;
+  /** 撤销删除：按原 id 恢复笔记（含标签关系），updatedAt 刷新为当前时间 */
+  restore(note: Note): Promise<void>;
   findById(id: string): Promise<Note | null>;
   /** 按输入顺序返回（用于保持搜索排名顺序） */
   listByIds(ids: string[]): Promise<Note[]>;
@@ -171,6 +173,25 @@ class IndexedDBNoteRepository implements NoteRepository {
 
     emitChange("notes", { type: "delete", ids: [id] });
     emitChange("tags", { type: "update", ids: existing.tags });
+  }
+
+  /** 撤销删除：delete 的逆操作。保留原 id/createdAt/syncVersion，
+   *  仅刷新 updatedAt（同步层的复活裁决以「本地更新晚于删除意图」为准） */
+  async restore(note: Note): Promise<void> {
+    if (await db.notes.get(note.id)) return;
+    const tags = cleanTags(note.tags);
+    const restored: Note = { ...note, tags, updatedAt: Date.now() };
+
+    await db.transaction("rw", db.notes, db.noteTags, db.tags, async () => {
+      await db.notes.put(restored);
+      for (const tagName of tags) {
+        await db.noteTags.put({ noteId: restored.id, tagName });
+      }
+      await incrementTagCounts(tags);
+    });
+
+    emitChange("notes", { type: "create", ids: [restored.id] });
+    emitChange("tags", { type: "update", ids: tags });
   }
 
   async findById(id: string): Promise<Note | null> {

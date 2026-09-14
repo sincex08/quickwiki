@@ -1,12 +1,18 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { formatDistanceToNowStrict } from "date-fns";
 import { zhCN } from "date-fns/locale";
-import { Pin, Trash2 } from "lucide-react";
+import { MoreHorizontal, Pin, Trash2 } from "lucide-react";
 import type { Note } from "@quickwiki/shared";
 import { cn, markdownToText } from "@/lib/utils";
 import { TagBadge } from "@/components/common/tag-badge";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 interface NoteCardProps {
   note: Note;
@@ -35,7 +41,10 @@ export function NoteCard({
   const dragging = useRef(false);
   const moved = useRef(false);
 
-  const snippet = compact ? "" : markdownToText(note.content).slice(0, 100);
+  const snippet = useMemo(
+    () => (compact ? "" : markdownToText(note.content).slice(0, 100)),
+    [compact, note.content]
+  );
 
   const handleTouchStart = (e: React.TouchEvent) => {
     startX.current = e.touches[0].clientX;
@@ -112,7 +121,7 @@ export function NoteCard({
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
         className={cn(
-          "relative cursor-pointer select-none rounded-lg border bg-card p-3 text-left transition-all hover:border-primary/40",
+          "group relative cursor-pointer select-none rounded-lg border bg-card p-3 text-left transition-[transform,border-color,box-shadow] hover:border-primary/40",
           compact && "px-3 py-2",
           active && "border-primary ring-1 ring-primary/30"
         )}
@@ -121,6 +130,36 @@ export function NoteCard({
           transition: dragging.current ? "none" : "transform 0.2s ease",
         }}
       >
+        {/* 桌面端悬浮操作菜单（移动端走左滑手势） */}
+        <div className="absolute right-1 top-1 hidden opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 md:block">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label={`笔记 ${note.title} 操作`}
+                title="置顶 / 删除"
+                // 阻止冒泡到卡片本身的 onClick，避免打开笔记
+                onClick={(e) => e.stopPropagation()}
+                className="rounded p-1 text-muted-foreground hover:bg-background hover:text-foreground"
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={onTogglePin}>
+                <Pin className={cn("mr-2 h-4 w-4", note.pinned && "fill-primary text-primary")} />
+                {note.pinned ? "取消置顶" : "置顶"}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className="text-destructive focus:text-destructive"
+                onClick={onDelete}
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                删除
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
         <div className="flex items-start gap-1.5">
           {note.pinned && (
             <Pin className="mt-1 h-3.5 w-3.5 shrink-0 fill-primary text-primary" />

@@ -3,7 +3,21 @@
 import { useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { noteRepo } from "@/lib/data/repository";
+import { attachmentRepo } from "@/lib/data/attachment-repository";
+import type { AttachmentRecord } from "@/lib/db";
+import { useToastStore } from "@/stores/use-toast-store";
 import { useUIStore } from "@/stores/use-ui-store";
+import type { Note } from "@quickwiki/shared";
+
+/**
+ * 删除笔记并开启撤销窗口：删除前缓存笔记与附件（含 blob），
+ * toast 内点「撤销」按原 id 完整恢复。同步语义见 sync-engine 复活路径：
+ * 墓碑未推送时 outbox 覆盖为 upsert；已推送时恢复走「本地更新晚于删除意图」复活。
+ */
+async function undoDelete(note: Note, attachments: AttachmentRecord[]) {
+  await noteRepo.restore(note);
+  await attachmentRepo.restore(attachments);
+}
 
 /** 笔记动作：创建后跳转、删除后清理选中态 */
 export function useNoteActions() {
@@ -27,10 +41,24 @@ export function useNoteActions() {
 
   const deleteNote = useCallback(
     async (id: string) => {
+      const note = await noteRepo.findById(id);
+      if (!note) return;
+      const attachments = await attachmentRepo.listRecordsByNote(id);
+
+      // 先删附件再删笔记：笔记删除事件会触发同步层的附件级联删除，
+      // 附件先删空后级联成为 no-op，撤销恢复时不存在竞态
+      await attachmentRepo.deleteByIds(attachments.map((a) => a.id));
       await noteRepo.delete(id);
       if (activeNoteId === id) {
         openNote(null);
       }
+
+      useToastStore.getState().show(`已删除「${note.title}」`, "success", {
+        action: {
+          label: "撤销",
+          onClick: () => void undoDelete(note, attachments),
+        },
+      });
     },
     [activeNoteId, openNote]
   );

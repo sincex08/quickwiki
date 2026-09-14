@@ -14,6 +14,7 @@ import {
   PenLine,
   Pin,
   RefreshCcw,
+  Tag,
   Trash2,
 } from "lucide-react";
 import { AUTOSAVE_DEBOUNCE_MS } from "@quickwiki/shared";
@@ -58,6 +59,20 @@ export function EditorPane() {
 
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
   const [confirmOpen, setConfirmOpen] = useState(false);
+  /** 标签区展开态：无标签时折叠为入口按钮，展开（或已有标签）才渲染编辑行 */
+  const [tagsOpen, setTagsOpen] = useState(false);
+
+  // 「已保存」短暂展示后淡出，避免状态文字常驻头部
+  useEffect(() => {
+    if (saveState !== "saved") return;
+    const timer = setTimeout(() => setSaveState("idle"), 2000);
+    return () => clearTimeout(timer);
+  }, [saveState]);
+
+  // 切换笔记时收起标签编辑区
+  useEffect(() => {
+    setTagsOpen(false);
+  }, [activeNoteId]);
 
   const pendingRef = useRef<{ id: string; content: string } | null>(null);
   /**
@@ -352,6 +367,7 @@ export function EditorPane() {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onClick={() => moveToNotebook(note.id, null)}>
+              <span className="mr-1.5 inline-block h-2 w-2 rounded-full border border-dashed border-muted-foreground" />
               未分类
               {note.notebookId == null && (
                 <Check className="ml-auto h-3.5 w-3.5" />
@@ -472,13 +488,28 @@ export function EditorPane() {
         )}
       </div>
 
-      {/* 标签 */}
-      <div className="flex shrink-0 items-center border-b px-3 py-1.5">
-        <TagEditor
-          tags={note.tags}
-          onChange={(tags) => void noteRepo.update(note.id, { tags })}
-        />
-      </div>
+      {/* 标签：无标签时折叠为入口按钮，避免常驻空行占位 */}
+      {note.tags.length > 0 || tagsOpen ? (
+        <div className="flex shrink-0 items-center border-b px-3 py-1.5">
+          <TagEditor
+            tags={note.tags}
+            onChange={(tags) => void noteRepo.update(note.id, { tags })}
+            autoFocus
+          />
+        </div>
+      ) : (
+        <div className="flex shrink-0 items-center border-b px-3 py-1">
+          <button
+            type="button"
+            onClick={() => setTagsOpen(true)}
+            className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+            aria-label="添加标签"
+          >
+            <Tag className="h-3 w-3" />
+            添加标签
+          </button>
+        </div>
+      )}
 
       {/* 编辑 / 源码 / 预览（块级混合编辑） */}
       {editorMode === "preview" ? (

@@ -59,13 +59,13 @@ export function SidebarContent() {
   };
 
   const selectNotebook = (id: string | null) => {
-    // 再次点击已选中的笔记本 = 取消选中，回到「全部笔记」
-    setNotebookFilter(notebookFilter === id ? null : id);
+    // 选中是单选状态：重复点击已选项不取消，只能通过切换其它项更换
+    setNotebookFilter(id);
     goNotes();
   };
 
   const selectUncategorized = () => {
-    setNotebookFilter(notebookFilter === "none" ? null : "none");
+    setNotebookFilter("none");
     goNotes();
   };
 
@@ -123,8 +123,20 @@ export function SidebarContent() {
 
         {/* 笔记本列表 */}
         <div className="mt-4">
-          <div className="mb-1 px-2 text-xs font-medium text-muted-foreground">
-            笔记本
+          <div className="mb-1 flex items-center justify-between px-2">
+            <span className="text-xs font-medium text-muted-foreground">
+              笔记本
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setSidebarOpen(false);
+                router.push("/notebooks");
+              }}
+              className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+            >
+              管理
+            </button>
           </div>
           {notebooks.length === 0 && (
             <div className="px-2 py-1 text-xs text-muted-foreground">

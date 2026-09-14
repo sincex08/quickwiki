@@ -25,6 +25,18 @@ export function Toaster() {
           )}
         >
           <span className="flex-1 break-all">{t.message}</span>
+          {t.action && (
+            <button
+              type="button"
+              onClick={() => {
+                t.action?.onClick();
+                dismiss(t.id);
+              }}
+              className="shrink-0 rounded font-medium text-primary hover:underline"
+            >
+              {t.action.label}
+            </button>
+          )}
           <button
             type="button"
             aria-label="关闭提示"
