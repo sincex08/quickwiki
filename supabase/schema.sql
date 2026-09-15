@@ -1,7 +1,8 @@
 -- ============================================================
 -- QuickWiki 云端同步 · Supabase Schema
 -- 在 Supabase 控制台 SQL Editor 中整体执行一次即可。
--- 已部署旧版 schema 的存量库请改执行 migrations/2026-09-11-sync-hardening.sql。
+-- 已部署旧版 schema 的存量库请按序改执行 migrations/ 下相应增量迁移
+-- （2026-09-11 同步加固、2026-09-15 笔记本嵌套）。
 -- 设计要点：
 --   * uuid 主键复用客户端本地生成的 ID（crypto.randomUUID），无映射成本
 --   * updated_at 由客户端写入（编辑时间元数据），服务端不覆盖
@@ -23,6 +24,8 @@ create table if not exists public.notebooks (
   user_id           uuid not null references public.profiles (id) on delete cascade,
   name              text not null,
   color             text not null default '#3b82f6',
+  -- 嵌套分组（「文件夹」= 当作容器用的笔记本）；客户端防环，删除时子级由客户端上移
+  parent_id         uuid references public.notebooks (id) on delete set null,
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now(),
   server_updated_at timestamptz not null default now(),
@@ -97,6 +100,8 @@ create index if not exists notes_user_updated_idx
   on public.notes (user_id, updated_at);
 create index if not exists notebooks_user_updated_idx
   on public.notebooks (user_id, updated_at);
+create index if not exists notebooks_user_parent_idx
+  on public.notebooks (user_id, parent_id);
 create index if not exists notes_user_server_updated_idx
   on public.notes (user_id, server_updated_at);
 create index if not exists notebooks_user_server_updated_idx

@@ -46,6 +46,10 @@ export default function NotebooksPage() {
   };
 
   const editing = notebooks.find((n) => n.id === editingId);
+  const nameById = new Map(notebooks.map((n) => [n.id, n.name]));
+  /** 父级缺失（远端删除先到）时不显示上级行 */
+  const parentNameOf = (nb: Notebook) =>
+    nb.parentId ? nameById.get(nb.parentId) ?? null : null;
 
   return (
     <div className="h-full overflow-y-auto">
@@ -101,6 +105,11 @@ export default function NotebooksPage() {
                     {counts.byNotebook[nb.id] ?? 0} 篇笔记 · 创建于{" "}
                     {format(nb.createdAt, "yyyy-MM-dd", { locale: zhCN })}
                   </div>
+                  {parentNameOf(nb) && (
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      上级：{parentNameOf(nb)}
+                    </div>
+                  )}
                 </button>
 
                 <DropdownMenu>
@@ -145,6 +154,7 @@ export default function NotebooksPage() {
         editingId={editingId}
         initialName={editing?.name ?? ""}
         initialColor={editing?.color ?? NOTEBOOK_COLORS[0]}
+        initialParentId={editing?.parentId ?? null}
       />
 
       <ConfirmDialog

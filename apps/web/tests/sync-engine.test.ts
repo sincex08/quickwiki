@@ -60,6 +60,21 @@ function remoteNote(overrides: Row): Row {
   };
 }
 
+function remoteNotebook(overrides: Row): Row {
+  return {
+    user_id: USER_ID,
+    name: "nb",
+    color: "#f00",
+    parent_id: null,
+    created_at: clock.at(1000),
+    updated_at: clock.at(1000),
+    server_updated_at: clock.at(1000),
+    version: 1,
+    deleted_at: null,
+    ...overrides,
+  };
+}
+
 beforeAll(async () => {
   clock = new FakeClock();
   tables = {};
@@ -264,5 +279,200 @@ describe("push：outbox 毒丸隔离", () => {
     expect(getSyncState().error).toContain("已跳过");
     // 条目保留，等待人工排查（不静默丢数据）
     expect(await db.outbox.get("note:bad")).toBeDefined();
+  });
+});
+
+describe("笔记本嵌套：parent_id 同步", () => {
+  it("push 映射 parent_id（顶层为 null）", async () => {
+    await db.notebooks.put({
+      id: "p1",
+      name: "父",
+      color: "#f00",
+      parentId: null,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    await db.notebooks.put({
+      id: "c1",
+      name: "子",
+      color: "#0f0",
+      parentId: "p1",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    await db.outbox.bulkPut([
+      { key: "notebook:p1", kind: "notebook", entityId: "p1", deleted: false, queuedAt: 1 },
+      { key: "notebook:c1", kind: "notebook", entityId: "c1", deleted: false, queuedAt: 1 },
+    ]);
+
+    await syncNow();
+
+    expect(tables.notebooks.find((r) => r.id === "c1")!.parent_id).toBe("p1");
+    expect(tables.notebooks.find((r) => r.id === "p1")!.parent_id).toBeNull();
+    expect(await db.outbox.get("notebook:c1")).toBeUndefined();
+  });
+
+  it("pull 应用 parent_id", async () => {
+    tables.notebooks.push(remoteNotebook({ id: "p1" }));
+    tables.notebooks.push(
+      remoteNotebook({ id: "c1", parent_id: "p1", server_updated_at: clock.at(2000) })
+    );
+
+    await syncNow();
+
+    expect((await db.notebooks.get("c1"))!.parentId).toBe("p1");
+    expect((await db.notebooks.get("p1"))!.parentId).toBeNull();
+  });
+
+  it("远端 LWW 造环：apply 侧断环并入队推平", async () => {
+    // 本地：a 挂在 b 下；远端覆盖 b 挂到 a 下 → a→b→a 成环
+    await db.notebooks.put({
+      id: "a",
+      name: "A",
+      color: "#f00",
+      parentId: "b",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    await db.notebooks.put({
+      id: "b",
+      name: "B",
+      color: "#0f0",
+      parentId: null,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    tables.notebooks.push(
+      remoteNotebook({
+        id: "b",
+        parent_id: "a",
+        updated_at: clock.at(5000),
+        server_updated_at: clock.at(5000),
+      })
+    );
+
+    await syncNow();
+
+    // 断环：b 的父级被置空，树重新可达
+    expect((await db.notebooks.get("b"))!.parentId).toBeNull();
+    // 断环修正已入队（推平服务端）
+    const entry = await db.outbox.get("notebook:b");
+    expect(entry).toBeDefined();
+    expect(entry!.deleted).toBe(false);
+  });
+
+  it("远端删除笔记本：子笔记本上移到被删者的父级并入队", async () => {
+    await db.notebooks.put({
+      id: "root",
+      name: "root",
+      color: "#f00",
+      parentId: null,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    await db.notebooks.put({
+      id: "mid",
+      name: "mid",
+      color: "#0f0",
+      parentId: "root",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    await db.notebooks.put({
+      id: "child",
+      name: "child",
+      color: "#00f",
+      parentId: "mid",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    tables.notebooks.push(
+      remoteNotebook({
+        id: "mid",
+        deleted_at: clock.at(8000),
+        server_updated_at: clock.at(8000),
+      })
+    );
+
+    await syncNow();
+
+    expect(await db.notebooks.get("mid")).toBeUndefined();
+    expect((await db.notebooks.get("child"))!.parentId).toBe("root");
+    const entry = await db.outbox.get("notebook:child");
+    expect(entry).toBeDefined();
+    expect(entry!.deleted).toBe(false);
+  });
+});
+
+describe("孤儿清扫", () => {
+  it("cat 指向不存在笔记本的笔记收敛进未分类并入队", async () => {
+    // 模拟多端竞态残留：归属指向已消失的笔记本
+    await db.notes.put(localNote({ id: "orphan1", notebookId: "gone" }));
+    tables.notebooks.push(remoteNotebook({ id: "live" }));
+
+    await syncNow();
+
+    const fixed = await db.notes.get("orphan1");
+    expect(fixed!.notebookId).toBeNull();
+    expect((fixed as Note & { cat?: string }).cat).toBe("");
+    const entry = await db.outbox.get("note:orphan1");
+    expect(entry).toBeDefined();
+    expect(entry!.deleted).toBe(false);
+  });
+});
+
+describe("同步路径维护标签计数", () => {
+  it("applyRemoteNote 维护 noteTags 行与 tags 计数器", async () => {
+    tables.notes.push(
+      remoteNote({ id: "tag1", tags: ["work", "life"], server_updated_at: clock.at(3000) })
+    );
+
+    await syncNow();
+
+    expect((await db.notes.get("tag1"))!.tags).toEqual(["work", "life"]);
+    expect((await db.tags.get("work"))!.count).toBe(1);
+    expect((await db.tags.get("life"))!.count).toBe(1);
+    const links = await db.noteTags.where("noteId").equals("tag1").toArray();
+    expect(links.map((l) => l.tagName).sort()).toEqual(["life", "work"]);
+
+    // 第二轮：远端把 tag1 的标签改为 ["work"] → life 计数归零删除
+    tables.notes.push(
+      remoteNote({
+        id: "tag1",
+        tags: ["work"],
+        server_updated_at: clock.at(6000),
+        updated_at: clock.at(6000),
+      })
+    );
+    await syncNow();
+
+    expect(await db.tags.get("life")).toBeUndefined();
+    expect((await db.tags.get("work"))!.count).toBe(1);
+    const linksAfter = await db.noteTags.where("noteId").equals("tag1").toArray();
+    expect(linksAfter.map((l) => l.tagName)).toEqual(["work"]);
+  });
+
+  it("远端删除笔记回收标签计数与关联", async () => {
+    // 本地已有正常标签状态（低 updatedAt，避免触发「本地较新」复活分支）
+    await db.notes.put(
+      localNote({ id: "d1", tags: ["tmp"], createdAt: 1000, updatedAt: 1000 })
+    );
+    await db.noteTags.add({ noteId: "d1", tagName: "tmp" });
+    await db.tags.add({ name: "tmp", count: 1 });
+
+    tables.notes.push(
+      remoteNote({
+        id: "d1",
+        tags: ["tmp"],
+        deleted_at: clock.at(9000),
+        server_updated_at: clock.at(9000),
+      })
+    );
+
+    await syncNow();
+
+    expect(await db.notes.get("d1")).toBeUndefined();
+    expect(await db.tags.get("tmp")).toBeUndefined();
+    expect(await db.noteTags.where("noteId").equals("d1").count()).toBe(0);
   });
 });

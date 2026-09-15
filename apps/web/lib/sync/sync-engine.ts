@@ -7,6 +7,11 @@ import {
   attachmentRepo,
   attachmentExt,
 } from "@/lib/data/attachment-repository";
+import {
+  cleanTags,
+  retractNoteTags,
+  syncNoteTags,
+} from "@/lib/data/tag-counts";
 import { setBlobMissingHandler } from "@/lib/attachments/resolve";
 import type { Note, Notebook } from "@quickwiki/shared";
 
@@ -406,6 +411,8 @@ interface RemoteNote extends RemoteRowMeta {
 interface RemoteNotebook extends RemoteRowMeta {
   name: string;
   color: string;
+  /** 父笔记本（嵌套分组）；null = 顶层 */
+  parent_id: string | null;
 }
 
 interface RemoteAttachment extends RemoteRowMeta {
@@ -656,6 +663,7 @@ async function pushNotebook(
     user_id: userId,
     name: nb.name,
     color: nb.color,
+    parent_id: nb.parentId ?? null,
     created_at: new Date(nb.createdAt).toISOString(),
     updated_at: new Date(nb.updatedAt).toISOString(),
     deleted_at: null,
@@ -905,6 +913,56 @@ async function pull(sb: SupabaseClient): Promise<void> {
     value: new Date(attNextTs).toISOString(),
   });
   await db.meta.put({ key: attPairKey, value: attPair });
+
+  await sweepOrphanNotes();
+}
+
+/**
+ * 孤儿笔记清扫：cat 指向不存在笔记本的笔记会计入「全部」，却不出现在
+ * 任何笔记本角标或「未分类」里（角标相加对不上）。可能来自多端并发的
+ * 删除/编辑竞态，每轮 pull 收敛一次：摘除分类入「未分类」，刷新
+ * updatedAt 并入队推平服务端残留的悬空 notebook_id（否则这些笔记后续
+ * 推送会因 FK 指向墓碑硬删后的不存在的行而无限重试）。
+ */
+async function sweepOrphanNotes(): Promise<void> {
+  const notebookIds = new Set(
+    (await db.notebooks.toCollection().primaryKeys()) as string[]
+  );
+  const cats = (await db.notes.orderBy("cat").uniqueKeys()) as string[];
+  const orphanCats = cats.filter((c) => c !== "" && !notebookIds.has(c));
+  if (orphanCats.length === 0) return;
+
+  applyingRemote = true;
+  try {
+    const movedAt = Date.now();
+    const affectedIds: string[] = [];
+    for (const cat of orphanCats) {
+      const ids = (await db.notes
+        .where("cat")
+        .equals(cat)
+        .primaryKeys()) as string[];
+      if (ids.length === 0) continue;
+      affectedIds.push(...ids);
+      await db.notes.where("cat").equals(cat).modify((note) => {
+        note.notebookId = null;
+        note.updatedAt = movedAt;
+      });
+    }
+    if (affectedIds.length === 0) return;
+    // applyingRemote 期间事件不入队，需手动写入 outbox 推平服务端残留
+    await db.outbox.bulkPut(
+      affectedIds.map((id) => ({
+        key: `note:${id}`,
+        kind: "note" as const,
+        entityId: id,
+        deleted: false,
+        queuedAt: Date.now(),
+      }))
+    );
+    emitChange("notes", { type: "update", ids: affectedIds });
+  } finally {
+    applyingRemote = false;
+  }
 }
 
 async function applyRemoteNote(row: RemoteNote, force = false): Promise<void> {
@@ -925,15 +983,24 @@ async function applyRemoteNote(row: RemoteNote, force = false): Promise<void> {
         scheduleSync();
         return;
       }
-      await db.notes.delete(row.id);
+      const tags = cleanTags(local?.tags);
+      await db.transaction("rw", db.notes, db.noteTags, db.tags, async () => {
+        await db.notes.delete(row.id);
+        // 与本地删除路径一致回收标签关联与计数，否则同步拉取的删除
+        // 会让标签角标虚高、noteTags 残留死行
+        await retractNoteTags(row.id, tags);
+      });
       await db.outbox.delete(`note:${row.id}`);
       // 远端删除已级联附件：本地附件直接清理（无需入队，墓碑由附件 pull 收敛）
       await removeNoteAttachmentsLocal(row.id);
       emitChange("notes", { type: "delete", ids: [row.id] });
+      if (tags.length > 0) {
+        emitChange("tags", { type: "update", ids: tags });
+      }
       return;
     }
+    const local = await db.notes.get(row.id);
     if (!force) {
-      const local = await db.notes.get(row.id);
       const remoteUpdated = new Date(row.updated_at).getTime();
       // 本地更新且有待推送修改 → 本地胜出，等 push 处理
       // （不覆盖本地、不记录远端版本，避免绕过冲突检测）
@@ -942,23 +1009,48 @@ async function applyRemoteNote(row: RemoteNote, force = false): Promise<void> {
         if (pending) return;
       }
     }
+    const nextTags = cleanTags(row.tags);
     const note: Note = {
       id: row.id,
       title: row.title,
       titleManual: row.title_manual,
       content: row.content,
       notebookId: row.notebook_id,
-      tags: row.tags ?? [],
+      tags: nextTags,
       createdAt: new Date(row.created_at).getTime(),
       updatedAt: new Date(row.updated_at).getTime(),
       pinned: row.pinned,
       syncVersion: row.version,
     };
-    await db.notes.put(note);
+    await db.transaction("rw", db.notes, db.noteTags, db.tags, async () => {
+      await db.notes.put(note);
+      // 同步路径与本地 CRUD 走同一套标签维护：此前远端应用不写
+      // noteTags/tags，多端同步后标签角标与按标签过滤的列表会漂移
+      await syncNoteTags(row.id, cleanTags(local?.tags), nextTags);
+    });
     emitChange("notes", { type: "update", ids: [row.id] });
+    if (nextTags.length > 0 || (local?.tags.length ?? 0) > 0) {
+      emitChange("tags", { type: "update", ids: nextTags });
+    }
   } finally {
     applyingRemote = false;
   }
+}
+
+/** id 是否位于 parent 引用环上（沿父链走回自身）。
+ *  环不经过 id 时返回 false——该环由它自己的成员行被 apply 时检测并断开。 */
+async function notebookInCycle(id: string): Promise<boolean> {
+  const visited = new Set<string>();
+  let cursor = await db.notebooks.get(id);
+  while (cursor) {
+    const next = cursor.parentId ?? null;
+    if (!next) return false;
+    if (next === id) return true;
+    if (visited.has(next)) return false;
+    visited.add(next);
+    cursor = await db.notebooks.get(next);
+  }
+  return false;
 }
 
 async function applyRemoteNotebook(
@@ -1017,6 +1109,34 @@ async function applyRemoteNotebook(
       if (affectedIds.length > 0) {
         emitChange("notes", { type: "update", ids: affectedIds });
       }
+
+      // 子笔记本上移到被删者的父级（根则变根），否则子树不可达；
+      // 同样手动入队推平其他设备
+      const parentOfDeleted = local?.parentId ?? null;
+      const children = await db.notebooks
+        .filter((nb) => nb.parentId === row.id)
+        .toArray();
+      if (children.length > 0) {
+        const movedAt = Date.now();
+        const childIds = children.map((c) => c.id);
+        for (const child of children) {
+          await db.notebooks.update(child.id, {
+            parentId: parentOfDeleted,
+            updatedAt: movedAt,
+          });
+        }
+        await db.outbox.bulkPut(
+          childIds.map((id) => ({
+            key: `notebook:${id}`,
+            kind: "notebook" as const,
+            entityId: id,
+            deleted: false,
+            queuedAt: Date.now(),
+          }))
+        );
+        scheduleSync();
+        emitChange("notebooks", { type: "update", ids: childIds });
+      }
       return;
     }
     if (!force) {
@@ -1031,12 +1151,31 @@ async function applyRemoteNotebook(
       id: row.id,
       name: row.name,
       color: row.color,
+      parentId: row.parent_id,
       createdAt: new Date(row.created_at).getTime(),
       updatedAt: new Date(row.updated_at).getTime(),
       syncVersion: row.version,
     };
     await db.notebooks.put(nb);
     emitChange("notebooks", { type: "update", ids: [row.id] });
+    // LWW 跨设备写入可能引入 parent 环（如两端互换父级后各自覆盖），
+    // 环成员在树中互相不可达。若本行已在环上，断开它的父级引用并入队，
+    // 推平服务端；各端对环成员行 apply 时按同一规则自愈，最终 LWW 收敛。
+    if (await notebookInCycle(row.id)) {
+      await db.notebooks.update(row.id, {
+        parentId: null,
+        updatedAt: Date.now(),
+      });
+      await db.outbox.put({
+        key: `notebook:${row.id}`,
+        kind: "notebook",
+        entityId: row.id,
+        deleted: false,
+        queuedAt: Date.now(),
+      });
+      scheduleSync();
+      emitChange("notebooks", { type: "update", ids: [row.id] });
+    }
   } finally {
     applyingRemote = false;
   }

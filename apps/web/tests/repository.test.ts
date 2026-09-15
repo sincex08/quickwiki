@@ -5,7 +5,11 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import { db } from "@/lib/db";
-import { noteRepo, notebookRepo } from "@/lib/data/repository";
+import {
+  canSetParent,
+  noteRepo,
+  notebookRepo,
+} from "@/lib/data/repository";
 import type { Note } from "@quickwiki/shared";
 
 function catOf(note: Note | undefined): string | undefined {
@@ -76,7 +80,7 @@ describe("list 过滤", () => {
 
 describe("counts", () => {
   it("孤儿笔记本引用不计入 byNotebook，也不计入未分类", async () => {
-    const nb1 = await notebookRepo.create("工作", "#f00");
+    const nb1 = await notebookRepo.create({ name: "工作", color: "#f00" });
     await noteRepo.create({ notebookId: nb1 });
     await noteRepo.create({ notebookId: null });
     // 模拟旧数据残留：指向已不存在笔记本的笔记
@@ -97,5 +101,78 @@ describe("counts", () => {
     expect(counts.uncategorized).toBe(1);
     expect(counts.byNotebook[nb1]).toBe(1);
     expect(counts.byNotebook["ghost"]).toBeUndefined();
+  });
+
+  it("list 与 counts 同口径：笔记本角标数等于列表 total", async () => {
+    const nb1 = await notebookRepo.create({ name: "工作", color: "#f00" });
+    await noteRepo.create({ notebookId: nb1 });
+    await noteRepo.create({ notebookId: nb1 });
+    await noteRepo.create({ notebookId: null });
+
+    const counts = await noteRepo.counts();
+    const listed = await noteRepo.list({ notebookId: nb1 });
+    expect(listed.total).toBe(counts.byNotebook[nb1]);
+  });
+});
+
+describe("listIndex", () => {
+  it("返回轻量行：置顶优先 + 更新时间倒序，不含正文", async () => {
+    const a = await noteRepo.create({ title: "a" });
+    const b = await noteRepo.create({ title: "b" });
+    await noteRepo.update(b, { pinned: true });
+
+    const items = await noteRepo.listIndex();
+    expect(items.map((n) => n.id)).toEqual([b, a]);
+    expect(items[0]).not.toHaveProperty("content");
+    expect(items[0]).toMatchObject({
+      id: b,
+      title: "b",
+      pinned: true,
+      notebookId: null,
+    });
+  });
+});
+
+describe("笔记本嵌套", () => {
+  it("create 带 parentId；canSetParent 拒绝成环组合", async () => {
+    const root = await notebookRepo.create({ name: "root", color: "#f00" });
+    const child = await notebookRepo.create({
+      name: "child",
+      color: "#0f0",
+      parentId: root,
+    });
+    expect((await db.notebooks.get(child))!.parentId).toBe(root);
+
+    expect(await canSetParent(root, child)).toBe(false); // root 挂到 child 下 → 环
+    expect(await canSetParent(root, null)).toBe(true);
+    expect(await canSetParent(child, root)).toBe(true);
+    expect(await canSetParent(root, root)).toBe(false);
+
+    // update 侧兜底：环组合直接抛错
+    await expect(
+      notebookRepo.update(root, { parentId: child })
+    ).rejects.toThrow();
+  });
+
+  it("delete：笔记移未分类，子笔记本上移到被删者的父级", async () => {
+    const root = await notebookRepo.create({ name: "root", color: "#f00" });
+    const mid = await notebookRepo.create({
+      name: "mid",
+      color: "#0f0",
+      parentId: root,
+    });
+    const child = await notebookRepo.create({
+      name: "child",
+      color: "#00f",
+      parentId: mid,
+    });
+    await noteRepo.create({ notebookId: mid });
+
+    await notebookRepo.delete(mid);
+
+    expect(await db.notebooks.get(mid)).toBeUndefined();
+    expect((await db.notebooks.get(child))!.parentId).toBe(root);
+    const note = (await db.notes.toArray())[0]!;
+    expect(note.notebookId).toBeNull();
   });
 });

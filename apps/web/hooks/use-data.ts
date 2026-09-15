@@ -18,6 +18,7 @@ import type {
   Tag,
 } from "@quickwiki/shared";
 import { DEFAULT_PAGE_SIZE } from "@quickwiki/shared";
+import type { NoteIndexItem } from "@/lib/data/repository";
 
 export interface NotesFilters {
   notebookId?: NotebookFilter | null;
@@ -185,6 +186,34 @@ export function useNoteCounts() {
   }, []);
 
   return counts;
+}
+
+/**
+ * 侧栏树索引：全量笔记的轻量行（不含正文），任何笔记变更后自动刷新。
+ * 客户端按笔记本分组渲染，规模为本地库全量（千条级无压力）。
+ */
+export function useNotesIndex() {
+  const [items, setItems] = useState<NoteIndexItem[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    const load = () => {
+      noteRepo.listIndex().then((list) => {
+        if (!active) return;
+        setItems(list);
+        setLoading(false);
+      });
+    };
+    load();
+    const unsub = subscribe("notes", load);
+    return () => {
+      active = false;
+      unsub();
+    };
+  }, []);
+
+  return { items, loading };
 }
 
 /**

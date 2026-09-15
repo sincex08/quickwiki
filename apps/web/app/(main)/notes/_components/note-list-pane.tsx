@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { AlignJustify, Plus, X } from "lucide-react";
 import type { Note } from "@quickwiki/shared";
 import { Button } from "@/components/ui/button";
@@ -9,10 +9,9 @@ import { EmptyState } from "@/components/notes/empty-state";
 import { NoteList } from "@/components/notes/note-list";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { useNotebooks, useNotes } from "@/hooks/use-data";
+import { useSearchResults } from "@/hooks/use-search";
 import { useNoteActions } from "@/hooks/use-note-actions";
 import { useUIStore } from "@/stores/use-ui-store";
-import { getSearchManager } from "@/lib/search/search-manager";
-import { noteRepo } from "@/lib/data/repository";
 import { cn } from "@/lib/utils";
 
 /** 列表底部「仅标题」切换：开启后卡片只显示标题，列表栏随之收窄 */
@@ -99,32 +98,8 @@ export function NoteListPane() {
     tag: tagFilter,
   });
 
-  // ===== 搜索模式 =====
-  const [searchResults, setSearchResults] = useState<Note[] | null>(null);
-  const [searching, setSearching] = useState(false);
-
-  useEffect(() => {
-    const query = searchQuery.trim();
-    if (!query) {
-      setSearchResults(null);
-      setSearching(false);
-      return;
-    }
-    setSearching(true);
-    const timer = setTimeout(async () => {
-      const hits = await getSearchManager().search(query);
-      const notes = await noteRepo.listByIds(hits.map((h) => h.id));
-      const noteMap = new Map(notes.map((n) => [n.id, n]));
-      // 保持搜索排名顺序
-      setSearchResults(
-        hits
-          .map((h) => noteMap.get(h.id))
-          .filter((n): n is Note => Boolean(n))
-      );
-      setSearching(false);
-    }, 150);
-    return () => clearTimeout(timer);
-  }, [searchQuery]);
+  // ===== 搜索模式（共享 hook：桌面侧栏树同源） =====
+  const { results: searchResults, searching } = useSearchResults(searchQuery);
 
   const isSearching = searchQuery.trim().length > 0;
   const notes = isSearching ? searchResults ?? [] : items;
@@ -149,7 +124,7 @@ export function NoteListPane() {
         {/* 搜索是全局的：结果可能落在当前笔记本/标签过滤之外，明示避免误解 */}
         {isSearching && !listLoading && notes.length > 0 && (
           <p className="px-3 pt-3 text-xs text-muted-foreground">
-            全局搜索：结果不限于当前笔记本 / 标签过滤
+            找到 {notes.length} 条结果 · 全局搜索，不限当前笔记本 / 标签
           </p>
         )}
         {listLoading ? (
@@ -173,7 +148,7 @@ export function NoteListPane() {
               title="还没有笔记"
               description="记录你的第一个想法，支持 Markdown 快捷输入"
               actionLabel="新建笔记"
-              onAction={createNote}
+              onAction={() => void createNote()}
             />
           )
         ) : (
@@ -201,7 +176,7 @@ export function NoteListPane() {
       {/* 移动端新建笔记 FAB */}
       <Button
         className="fixed bottom-24 right-4 z-40 h-[52px] w-[52px] rounded-full p-0 shadow-lg md:hidden"
-        onClick={createNote}
+        onClick={() => void createNote()}
         aria-label="新建笔记"
         title="新建笔记"
       >

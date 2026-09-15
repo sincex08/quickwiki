@@ -1,6 +1,12 @@
 import { db } from "@/lib/db";
 import { emitChange } from "@/lib/events";
 import { normalizeTag } from "@/lib/utils";
+import {
+  cleanTags,
+  incrementTagCounts,
+  retractNoteTags,
+  syncNoteTags,
+} from "@/lib/data/tag-counts";
 import type {
   ListFilters,
   Note,
@@ -23,11 +29,28 @@ export interface CreateNoteInput {
   tags?: string[];
 }
 
+export interface CreateNotebookInput {
+  name: string;
+  color: string;
+  /** 父笔记本（嵌套分组）；null/undefined = 顶层 */
+  parentId?: string | null;
+}
+
 export interface NoteCounts {
   all: number;
   /** 未分类（不属于任何笔记本）的笔记数 */
   uncategorized: number;
   byNotebook: Record<string, number>;
+}
+
+/** 笔记树索引行：侧栏导航用，刻意不含正文以控制内存 */
+export interface NoteIndexItem {
+  id: string;
+  title: string;
+  notebookId: string | null;
+  tags: string[];
+  pinned: boolean;
+  updatedAt: number;
 }
 
 export interface NoteRepository {
@@ -40,17 +63,39 @@ export interface NoteRepository {
   /** 按输入顺序返回（用于保持搜索排名顺序） */
   listByIds(ids: string[]): Promise<Note[]>;
   list(filters?: ListFilters): Promise<Paginated<Note>>;
+  /** 侧栏树索引：全量笔记的轻量行（不含正文），置顶优先 + 更新时间倒序 */
+  listIndex(): Promise<NoteIndexItem[]>;
   /** 全量与分笔记本的笔记数量（侧边栏角标） */
   counts(): Promise<NoteCounts>;
   exportAll(): Promise<Note[]>;
 }
 
 export interface NotebookRepository {
-  create(name: string, color: string): Promise<string>;
+  create(input: CreateNotebookInput): Promise<string>;
   update(id: string, updates: Partial<Notebook>): Promise<void>;
   delete(id: string): Promise<void>;
   findById(id: string): Promise<Notebook | null>;
   list(): Promise<Notebook[]>;
+}
+
+/**
+ * 环检测：把 id 的父级设为 newParentId 是否安全。
+ * 沿 newParentId 向上走父链，回到 id 即成环（UI 侧预防 + 写入前兜底）。
+ */
+export async function canSetParent(
+  id: string,
+  newParentId: string | null
+): Promise<boolean> {
+  if (!newParentId) return true;
+  if (newParentId === id) return false;
+  let cursor = await db.notebooks.get(newParentId);
+  while (cursor) {
+    const next = cursor.parentId ?? null;
+    if (!next) return true;
+    if (next === id) return false;
+    cursor = await db.notebooks.get(next);
+  }
+  return true;
 }
 
 export interface TagRepository {
@@ -63,36 +108,6 @@ export function newId(): string {
     return crypto.randomUUID();
   }
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function cleanTags(tags: string[] | undefined): string[] {
-  if (!tags) return [];
-  return Array.from(new Set(tags.map(normalizeTag).filter(Boolean)));
-}
-
-/** 标签计数 +1（不存在则创建） */
-async function incrementTagCounts(tags: string[]): Promise<void> {
-  for (const name of tags) {
-    const existing = await db.tags.get(name);
-    if (existing) {
-      await db.tags.update(name, { count: existing.count + 1 });
-    } else {
-      await db.tags.add({ name, count: 1 });
-    }
-  }
-}
-
-/** 标签计数 -1（归零则删除字典项） */
-async function decrementTagCounts(tags: string[]): Promise<void> {
-  for (const name of tags) {
-    const existing = await db.tags.get(name);
-    if (!existing) continue;
-    if (existing.count <= 1) {
-      await db.tags.delete(name);
-    } else {
-      await db.tags.update(name, { count: existing.count - 1 });
-    }
-  }
 }
 
 class IndexedDBNoteRepository implements NoteRepository {
@@ -136,22 +151,12 @@ class IndexedDBNoteRepository implements NoteRepository {
       await db.notes.update(id, { ...updates, updatedAt: Date.now() });
 
       if (nextTags) {
-        const oldTags = existing.tags;
-        const removed = oldTags.filter((t) => !nextTags.includes(t));
-        const added = nextTags.filter((t) => !oldTags.includes(t));
-
-        if (removed.length > 0) {
-          await db.noteTags
-            .where("noteId")
-            .equals(id)
-            .and((row) => removed.includes(row.tagName))
-            .delete();
-          await decrementTagCounts(removed);
-        }
-        for (const tagName of added) {
-          await db.noteTags.add({ noteId: id, tagName });
-        }
-        await incrementTagCounts(added);
+        const tagsChanged = await syncNoteTags(
+          id,
+          cleanTags(existing.tags),
+          nextTags
+        );
+        if (!tagsChanged) return;
       }
     });
 
@@ -167,8 +172,7 @@ class IndexedDBNoteRepository implements NoteRepository {
 
     await db.transaction("rw", db.notes, db.noteTags, db.tags, async () => {
       await db.notes.delete(id);
-      await db.noteTags.where("noteId").equals(id).delete();
-      await decrementTagCounts(existing.tags);
+      await retractNoteTags(id, cleanTags(existing.tags));
     });
 
     emitChange("notes", { type: "delete", ids: [id] });
@@ -232,7 +236,9 @@ class IndexedDBNoteRepository implements NoteRepository {
       // null，直接 equals(null) 查不到任何行，全表扫描也随数据量劣化
       rows = await db.notes.where("cat").equals("").toArray();
     } else if (filters.notebookId) {
-      rows = await db.notes.where("notebookId").equals(filters.notebookId).toArray();
+      // 与 counts() 同走 cat 派生索引：角标与列表口径一致，不会因
+      // notebookId / cat 双索引各自维护而漂移
+      rows = await db.notes.where("cat").equals(filters.notebookId).toArray();
     } else {
       rows = await db.notes.toArray();
     }
@@ -256,6 +262,24 @@ class IndexedDBNoteRepository implements NoteRepository {
     return db.notes.toArray();
   }
 
+  async listIndex(): Promise<NoteIndexItem[]> {
+    const rows = await db.notes.toArray();
+    const items: NoteIndexItem[] = rows.map((n) => ({
+      id: n.id,
+      title: n.title,
+      notebookId: n.notebookId,
+      tags: n.tags,
+      pinned: n.pinned,
+      updatedAt: n.updatedAt,
+    }));
+    // 与 list() 相同的排序约定：置顶优先，其次更新时间倒序
+    items.sort((a, b) => {
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      return b.updatedAt - a.updatedAt;
+    });
+    return items;
+  }
+
   async counts(): Promise<NoteCounts> {
     // 走 cat 派生索引的 count 查询，避免随笔记量线性劣化的全表加载。
     // byNotebook 只统计现存笔记本（孤儿引用不入角标，与侧边栏展示一致）
@@ -275,13 +299,17 @@ class IndexedDBNoteRepository implements NoteRepository {
 }
 
 class IndexedDBNotebookRepository implements NotebookRepository {
-  async create(name: string, color: string): Promise<string> {
+  async create(input: CreateNotebookInput): Promise<string> {
+    if (input.parentId && !(await db.notebooks.get(input.parentId))) {
+      throw new Error("父笔记本不存在");
+    }
     const id = newId();
     const now = Date.now();
     const notebook: Notebook = {
       id,
-      name: name.trim() || "未命名笔记本",
-      color,
+      name: input.name.trim() || "未命名笔记本",
+      color: input.color,
+      parentId: input.parentId ?? null,
       createdAt: now,
       updatedAt: now,
     };
@@ -291,18 +319,22 @@ class IndexedDBNotebookRepository implements NotebookRepository {
   }
 
   async update(id: string, updates: Partial<Notebook>): Promise<void> {
+    if (updates.parentId && !(await canSetParent(id, updates.parentId))) {
+      throw new Error("不能把笔记本移动到它自己或它的子级之下");
+    }
     await db.notebooks.update(id, { ...updates, updatedAt: Date.now() });
     emitChange("notebooks", { type: "update", ids: [id] });
   }
 
   async delete(id: string): Promise<void> {
-    let affectedIds: string[] = [];
+    let affectedNoteIds: string[] = [];
+    let childIds: string[] = [];
     const movedAt = Date.now();
     await db.transaction("rw", db.notebooks, db.notes, async () => {
-      // 删除笔记本时保留笔记，仅移出分类。
+      // 笔记保留，仅移出分类。
       // 注意：必须同时刷新 updatedAt 并以真实 ids 发出变更事件，
       // 否则这些笔记不会进入同步队列，其他设备会残留指向已删除笔记本的分类。
-      affectedIds = (await db.notes
+      affectedNoteIds = (await db.notes
         .where("notebookId")
         .equals(id)
         .primaryKeys()) as string[];
@@ -313,11 +345,25 @@ class IndexedDBNotebookRepository implements NotebookRepository {
           note.notebookId = null;
           note.updatedAt = movedAt;
         });
+      // 子笔记本上移到被删者的父级（根则变根），避免整棵子树不可达；
+      // 同样刷新 updatedAt 以进入同步队列推平其他设备
+      const target = await db.notebooks.get(id);
+      const parentId = target?.parentId ?? null;
+      const children = await db.notebooks
+        .filter((nb) => nb.parentId === id)
+        .toArray();
+      childIds = children.map((c) => c.id);
+      for (const child of children) {
+        await db.notebooks.update(child.id, { parentId, updatedAt: movedAt });
+      }
       await db.notebooks.delete(id);
     });
     emitChange("notebooks", { type: "delete", ids: [id] });
-    if (affectedIds.length > 0) {
-      emitChange("notes", { type: "update", ids: affectedIds });
+    if (childIds.length > 0) {
+      emitChange("notebooks", { type: "update", ids: childIds });
+    }
+    if (affectedNoteIds.length > 0) {
+      emitChange("notes", { type: "update", ids: affectedNoteIds });
     }
   }
 

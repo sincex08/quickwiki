@@ -26,18 +26,30 @@ export function useNoteActions() {
   const openNote = useUIStore((s) => s.openNote);
   const activeNoteId = useUIStore((s) => s.activeNoteId);
 
-  const createNote = useCallback(async () => {
-    // "none" 是「仅未分类」这一视图过滤条件，不是笔记本 id：此时新建笔记应为未分类
-    const notebookId =
-      notebookFilter && notebookFilter !== "none" ? notebookFilter : null;
-    const id = await noteRepo.create({ notebookId });
-    openNote(id);
-    // 仅从其他页面创建时跳转；已在 /notes 时跳转会堆叠历史记录并与 URL 同步竞争
-    if (typeof window !== "undefined" && window.location.pathname !== "/notes") {
-      router.push("/notes");
-    }
-    return id;
-  }, [notebookFilter, openNote, router]);
+  const createNote = useCallback(
+    async (options?: { notebookId?: string | null }) => {
+      // 显式传参（含 null）以参数为准：侧栏树节点上的「新建笔记」直达目标笔记本。
+      // 未传参时取当前视图过滤；"none" 是「仅未分类」这一过滤条件而非
+      // 笔记本 id，此时新建笔记应为未分类
+      const notebookId =
+        options && options.notebookId !== undefined
+          ? options.notebookId
+          : notebookFilter && notebookFilter !== "none"
+            ? notebookFilter
+            : null;
+      const id = await noteRepo.create({ notebookId });
+      openNote(id);
+      // 仅从其他页面创建时跳转；已在 /notes 时跳转会堆叠历史记录并与 URL 同步竞争
+      if (
+        typeof window !== "undefined" &&
+        window.location.pathname !== "/notes"
+      ) {
+        router.push("/notes");
+      }
+      return id;
+    },
+    [notebookFilter, openNote, router]
+  );
 
   const deleteNote = useCallback(
     async (id: string) => {

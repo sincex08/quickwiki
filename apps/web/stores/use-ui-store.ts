@@ -6,6 +6,7 @@ export type EditorMode = "edit" | "source" | "preview";
 
 const HYBRID_STORAGE_KEY = "quickwiki.hybridEditing";
 const LIST_TITLE_ONLY_KEY = "quickwiki.noteListTitleOnly";
+const TREE_EXPANDED_KEY = "quickwiki.treeExpanded";
 
 function readHybridDefault(): boolean {
   if (typeof window === "undefined") return true;
@@ -22,6 +23,26 @@ function readListTitleOnlyDefault(): boolean {
     return window.localStorage.getItem(LIST_TITLE_ONLY_KEY) === "1";
   } catch {
     return false;
+  }
+}
+
+interface TreeExpanded {
+  all: boolean;
+  ids: string[];
+}
+
+function readTreeExpandedDefault(): TreeExpanded {
+  if (typeof window === "undefined") return { all: false, ids: [] };
+  try {
+    const raw = window.localStorage.getItem(TREE_EXPANDED_KEY);
+    if (!raw) return { all: false, ids: [] };
+    const parsed = JSON.parse(raw) as Partial<TreeExpanded>;
+    return {
+      all: parsed.all === true,
+      ids: Array.isArray(parsed.ids) ? parsed.ids : [],
+    };
+  } catch {
+    return { all: false, ids: [] };
   }
 }
 
@@ -53,6 +74,10 @@ interface UIState {
   hybridEditing: boolean;
   /** 笔记列表是否只展示标题（紧凑模式，中栏更窄，持久化） */
   noteListTitleOnly: boolean;
+  /** 侧栏树「全部笔记」节点是否展开（持久化） */
+  treeExpandedAll: boolean;
+  /** 侧栏树展开的子节点 id（笔记本 id 与 "none"=未分类，持久化） */
+  treeExpandedIds: string[];
   /** 源码视图重挂载计数：抽屉等外部路径改写正文后 bump，刷新 textarea 内容 */
   sourceNonce: number;
 
@@ -65,8 +90,12 @@ interface UIState {
   setEditorMode: (mode: EditorMode) => void;
   setHybridEditing: (on: boolean) => void;
   setNoteListTitleOnly: (on: boolean) => void;
+  toggleTreeExpandedAll: () => void;
+  toggleTreeExpandedId: (id: string) => void;
   bumpSourceNonce: () => void;
 }
+
+const initialTreeExpanded = readTreeExpandedDefault();
 
 export const useUIStore = create<UIState>((set) => ({
   notebookFilter: null,
@@ -78,6 +107,8 @@ export const useUIStore = create<UIState>((set) => ({
   editorMode: "edit",
   hybridEditing: readHybridDefault(),
   noteListTitleOnly: readListTitleOnlyDefault(),
+  treeExpandedAll: initialTreeExpanded.all,
+  treeExpandedIds: initialTreeExpanded.ids,
   sourceNonce: 0,
 
   setNotebookFilter: (id) => set({ notebookFilter: id, tagFilter: null }),
@@ -103,5 +134,30 @@ export const useUIStore = create<UIState>((set) => ({
     }
     set({ noteListTitleOnly: on });
   },
+  toggleTreeExpandedAll: () =>
+    set(
+      (s): Partial<UIState> => {
+        const treeExpandedAll = !s.treeExpandedAll;
+        persistTreeExpanded({ all: treeExpandedAll, ids: s.treeExpandedIds });
+        return { treeExpandedAll };
+      }
+    ),
+  toggleTreeExpandedId: (id) =>
+    set((s): Partial<UIState> => {
+      const ids = s.treeExpandedIds.includes(id)
+        ? s.treeExpandedIds.filter((x) => x !== id)
+        : [...s.treeExpandedIds, id];
+      persistTreeExpanded({ all: s.treeExpandedAll, ids });
+      return { treeExpandedIds: ids };
+    }),
   bumpSourceNonce: () => set((s) => ({ sourceNonce: s.sourceNonce + 1 })),
 }));
+
+/** 树展开状态写 localStorage（失败静默，如隐私模式） */
+function persistTreeExpanded(value: TreeExpanded): void {
+  try {
+    window.localStorage.setItem(TREE_EXPANDED_KEY, JSON.stringify(value));
+  } catch {
+    // 忽略存储失败
+  }
+}

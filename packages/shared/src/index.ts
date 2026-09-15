@@ -36,6 +36,12 @@ export interface Notebook {
   name: string;
   /** 颜色标识（hex） */
   color: string;
+  /**
+   * 父笔记本 ID（嵌套分组：「文件夹」就是当作容器用的笔记本）。
+   * null/undefined 表示根级。客户端在设置时做环检测，
+   * 同步层 LWW 写入可能造环，apply 侧兜底断环。
+   */
+  parentId?: string | null;
   createdAt: number;
   updatedAt: number;
   /** 云同步乐观锁版本，语义同 Note.syncVersion */

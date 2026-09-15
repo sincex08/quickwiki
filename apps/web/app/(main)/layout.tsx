@@ -27,8 +27,8 @@ export default function MainLayout({
   return (
     <RequireAuth>
       <div className="flex h-full">
-        {/* 桌面端固定侧边栏 */}
-        <aside className="hidden w-60 shrink-0 border-r md:block lg:w-64">
+        {/* 桌面端固定侧边栏（树状导航：笔记本 → 笔记，已并入原列表栏职责） */}
+        <aside className="hidden w-72 shrink-0 border-r md:block lg:w-80">
           <SidebarContent />
         </aside>
 
@@ -41,7 +41,10 @@ export default function MainLayout({
         </Sheet>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <Header onNewNote={createNote} onOpenSidebar={() => setSidebarOpen(true)} />
+          <Header
+            onNewNote={() => void createNote()}
+            onOpenSidebar={() => setSidebarOpen(true)}
+          />
           <main className="min-h-0 flex-1">{children}</main>
           <MobileNav />
         </div>
