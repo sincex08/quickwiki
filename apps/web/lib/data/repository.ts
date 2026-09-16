@@ -7,6 +7,15 @@ import {
   retractNoteTags,
   syncNoteTags,
 } from "@/lib/data/tag-counts";
+import {
+  containerKeyOf,
+  isManualOrder,
+  numberSequence,
+  sortContainer,
+  sortNotesForDisplay,
+  swapAdjacent,
+  topOrderValue,
+} from "@/lib/data/note-order";
 import type {
   ListFilters,
   Note,
@@ -51,6 +60,8 @@ export interface NoteIndexItem {
   tags: string[];
   pinned: boolean;
   updatedAt: number;
+  /** 手动顺序，见 Note.sortOrder */
+  sortOrder: number | null;
 }
 
 export interface NoteRepository {
@@ -63,10 +74,24 @@ export interface NoteRepository {
   /** 按输入顺序返回（用于保持搜索排名顺序） */
   listByIds(ids: string[]): Promise<Note[]>;
   list(filters?: ListFilters): Promise<Paginated<Note>>;
-  /** 侧栏树索引：全量笔记的轻量行（不含正文），置顶优先 + 更新时间倒序 */
+  /** 侧栏树索引：全量笔记的轻量行（不含正文），容器内按手动顺序/更新时间排序 */
   listIndex(): Promise<NoteIndexItem[]>;
   /** 全量与分笔记本的笔记数量（侧边栏角标） */
   counts(): Promise<NoteCounts>;
+  /** 拖拽落定：把笔记放到目标容器的第 index 位；跨容器即同时改分类（拖到别的笔记本） */
+  moveToPosition(
+    id: string,
+    notebookId: string | null,
+    index: number
+  ): Promise<void>;
+  /** 恢复默认顺序：清空容器内全部 sortOrder（回到 置顶 + 更新时间倒序） */
+  resetOrder(notebookId: string | null): Promise<void>;
+  /** 移动笔记到指定笔记本（null = 未分类）；落入手动顺序的容器时置于最前 */
+  moveToNotebook(id: string, notebookId: string | null): Promise<void>;
+  /** 置顶并置于容器最前（手动顺序容器里 pinned 不决定位置，故需一并重排） */
+  pinToTop(id: string): Promise<void>;
+  /** 相对移动一位（上移 / 下移）；已在边界返回 false（UI 据此禁用菜单项） */
+  moveBy(id: string, direction: -1 | 1): Promise<boolean>;
   exportAll(): Promise<Note[]>;
 }
 
@@ -115,16 +140,23 @@ class IndexedDBNoteRepository implements NoteRepository {
     const id = newId();
     const now = Date.now();
     const tags = cleanTags(input.tags);
+    const notebookId = input.notebookId ?? null;
+    // 目标容器已进入手动顺序时，新笔记编号到最前（与默认列表「最新在最上」一致）
+    const siblings = await db.notes
+      .where("cat")
+      .equals(containerKeyOf(notebookId))
+      .toArray();
     const note: Note = {
       id,
       title: input.title?.trim() || "无标题",
       titleManual: null,
       content: input.content ?? "",
-      notebookId: input.notebookId ?? null,
+      notebookId,
       tags,
       createdAt: now,
       updatedAt: now,
       pinned: false,
+      sortOrder: isManualOrder(siblings) ? topOrderValue(siblings) : null,
     };
 
     await db.transaction("rw", db.notes, db.noteTags, db.tags, async () => {
@@ -247,11 +279,9 @@ class IndexedDBNoteRepository implements NoteRepository {
       rows = rows.filter((n) => n.pinned);
     }
 
-    // 置顶优先，其次按更新时间倒序
-    rows.sort((a, b) => {
-      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-      return b.updatedAt - a.updatedAt;
-    });
+    // 容器（笔记本 / 未分类）内排序：已手动排序的容器看 sortOrder，
+    // 其余仍按 置顶优先 + 更新时间倒序（见 note-order.ts）
+    rows = sortNotesForDisplay(rows);
 
     const total = rows.length;
     const items = rows.slice(offset, offset + limit);
@@ -271,13 +301,131 @@ class IndexedDBNoteRepository implements NoteRepository {
       tags: n.tags,
       pinned: n.pinned,
       updatedAt: n.updatedAt,
+      sortOrder: n.sortOrder ?? null,
     }));
-    // 与 list() 相同的排序约定：置顶优先，其次更新时间倒序
-    items.sort((a, b) => {
-      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-      return b.updatedAt - a.updatedAt;
+    // 与 list() 相同的排序约定：容器内按手动顺序，未手动排序的按 置顶 + 时间倒序
+    return sortNotesForDisplay(items);
+  }
+
+  /** 容器内全部笔记（走 cat 派生索引：未分类为空串，与角标口径一致） */
+  private async containerRows(notebookId: string | null): Promise<Note[]> {
+    return db.notes.where("cat").equals(containerKeyOf(notebookId)).toArray();
+  }
+
+  /**
+   * 写入新的顺序编号（含局部追加字段）。
+   *
+   * **刻意不刷新 `updatedAt`**：排序不是内容编辑，刷时间会让列表上的「x 分钟前」
+   * 跳到「刚刚」，也会让「恢复默认顺序」后所有笔记的时间塌缩到同一刻、
+   * 默认排序退化为按 id 排序。同步不依赖 updatedAt 推进 —— pushNote 走乐观锁
+   * 条件更新，成功后写回 syncVersion（见 sync-engine）。
+   */
+  private async writeOrder(
+    rows: Note[],
+    orderMap: Map<string, number>,
+    extra?: Map<string, Partial<Note>>
+  ): Promise<void> {
+    const next = rows.map((r) => {
+      const merged: Note & { cat?: string } = {
+        ...r,
+        sortOrder: orderMap.get(r.id) ?? r.sortOrder ?? null,
+        ...(extra?.get(r.id) ?? {}),
+      };
+      // bulkPut 不经过 db.notes 的 hook：派生索引 cat 必须自己维护
+      // （跨容器拖拽会改 notebookId，漏了它「未分类 / 按笔记本过滤」就会对不上）
+      merged.cat = merged.notebookId ?? "";
+      return merged;
     });
-    return items;
+    await db.notes.bulkPut(next);
+    emitChange("notes", { type: "update", ids: next.map((n) => n.id) });
+  }
+
+  async moveToPosition(
+    id: string,
+    notebookId: string | null,
+    index: number
+  ): Promise<void> {
+    const note = await db.notes.get(id);
+    if (!note) return;
+    const targetNotebookId = notebookId ?? null;
+    const crossContainer = (note.notebookId ?? null) !== targetNotebookId;
+
+    const targetRows = await this.containerRows(targetNotebookId);
+    const siblings = targetRows.filter((r) => r.id !== id);
+    // 目标容器若尚未手动排序，以它当前的显示顺序为基线，再插入被拖笔记
+    const ordered = sortContainer(siblings).map((r) => r.id);
+    const clamped = Math.max(0, Math.min(index, ordered.length));
+    ordered.splice(clamped, 0, id);
+
+    const rows = crossContainer
+      ? [...targetRows, { ...note, notebookId: targetNotebookId }]
+      : targetRows;
+    await this.writeOrder(
+      rows,
+      numberSequence(ordered),
+      // 跨容器 = 同时改了分类：按既有约定刷新 updatedAt（排序本身不刷新）
+      crossContainer
+        ? new Map([[id, { notebookId: targetNotebookId, updatedAt: Date.now() }]])
+        : undefined
+    );
+  }
+
+  async resetOrder(notebookId: string | null): Promise<void> {
+    const rows = await this.containerRows(notebookId);
+    if (!rows.some((r) => r.sortOrder != null)) return;
+    const cleared = rows.map((r) => ({ ...r, sortOrder: null }));
+    await db.notes.bulkPut(cleared);
+    emitChange("notes", { type: "update", ids: cleared.map((n) => n.id) });
+  }
+
+  async moveToNotebook(id: string, notebookId: string | null): Promise<void> {
+    const note = await db.notes.get(id);
+    if (!note) return;
+    const nextNotebookId = notebookId ?? null;
+    if ((note.notebookId ?? null) === nextNotebookId) return;
+    // 落入手动顺序的容器时置于最前（与「新建笔记在最前」一致）；
+    // 非手动容器交给默认排序 —— updatedAt 刷新后它自然排最前
+    const siblings = await this.containerRows(nextNotebookId);
+    const sortOrder = isManualOrder(siblings) ? topOrderValue(siblings) : null;
+    await db.notes.update(id, {
+      notebookId: nextNotebookId,
+      sortOrder,
+      updatedAt: Date.now(),
+    });
+    emitChange("notes", { type: "update", ids: [id] });
+  }
+
+  async pinToTop(id: string): Promise<void> {
+    const note = await db.notes.get(id);
+    if (!note) return;
+    const rows = await this.containerRows(note.notebookId ?? null);
+    if (!isManualOrder(rows)) {
+      // 未手动排序的容器：置顶标记本身就把它排到最前
+      await db.notes.update(id, { pinned: true, updatedAt: Date.now() });
+      emitChange("notes", { type: "update", ids: [id] });
+      return;
+    }
+    // 手动顺序容器：pinned 不决定位置，必须显式把编号挪到最前
+    const rest = sortContainer(rows)
+      .map((r) => r.id)
+      .filter((x) => x !== id);
+    await this.writeOrder(
+      rows,
+      numberSequence([id, ...rest]),
+      new Map([[id, { pinned: true }]])
+    );
+  }
+
+  async moveBy(id: string, direction: -1 | 1): Promise<boolean> {
+    const note = await db.notes.get(id);
+    if (!note) return false;
+    const rows = await this.containerRows(note.notebookId ?? null);
+    // 按「当前显示顺序」相邻交换（再整体编号，首次操作即进入手动顺序）
+    const ordered = sortContainer(rows).map((r) => r.id);
+    const next = swapAdjacent(ordered, id, direction);
+    if (!next) return false;
+    await this.writeOrder(rows, numberSequence(next));
+    return true;
   }
 
   async counts(): Promise<NoteCounts> {

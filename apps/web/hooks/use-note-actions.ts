@@ -76,12 +76,48 @@ export function useNoteActions() {
   );
 
   const togglePin = useCallback(async (id: string, pinned: boolean) => {
-    await noteRepo.update(id, { pinned: !pinned });
+    // 取消置顶：只去掉标记（手动顺序容器里位置由编号决定，不回到原位）
+    if (pinned) {
+      await noteRepo.update(id, { pinned: false });
+      return;
+    }
+    // 置顶 = 移到容器最前：手动顺序的容器里 pinned 不决定位置，需一并重排编号
+    await noteRepo.pinToTop(id);
   }, []);
 
-  const moveToNotebook = useCallback(async (id: string, notebookId: string | null) => {
-    await noteRepo.update(id, { notebookId });
+  const moveToNotebook = useCallback(
+    async (id: string, notebookId: string | null) => {
+      // 落入手动顺序的容器时仓库层会置于最前（见 noteRepo.moveToNotebook）
+      await noteRepo.moveToNotebook(id, notebookId);
+    },
+    []
+  );
+
+  /** 拖拽落定：放到目标容器第 index 位（跨容器即同时改分类） */
+  const moveNoteToPosition = useCallback(
+    async (id: string, notebookId: string | null, index: number) => {
+      await noteRepo.moveToPosition(id, notebookId, index);
+    },
+    []
+  );
+
+  /** 上移 / 下移一位（菜单微调，手机与键盘用户的主路径）；已在边界返回 false */
+  const moveNote = useCallback(async (id: string, direction: -1 | 1) => {
+    return noteRepo.moveBy(id, direction);
   }, []);
 
-  return { createNote, deleteNote, togglePin, moveToNotebook };
+  /** 恢复该容器的默认顺序（置顶 + 更新时间倒序） */
+  const resetOrder = useCallback(async (notebookId: string | null) => {
+    await noteRepo.resetOrder(notebookId);
+  }, []);
+
+  return {
+    createNote,
+    deleteNote,
+    togglePin,
+    moveToNotebook,
+    moveNoteToPosition,
+    moveNote,
+    resetOrder,
+  };
 }

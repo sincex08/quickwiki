@@ -98,6 +98,10 @@ db.version(4).stores({
  * v5：notes 派生索引 cat（notebookId ?? ""）。
  * IndexedDB 索引不收录 null/undefined，「仅未分类」过滤此前只能全表扫描；
  * 派生为空字符串后走索引。cat 由下方 CRUD hook 在所有写入路径自动维护。
+ *
+ * 注：手动顺序字段 `sortOrder`（2026-09-16 加入）**刻意不进索引、不升版本**——
+ * 它只在客户端按容器在内存排序（见 lib/data/note-order.ts），
+ * IndexedDB 只是原样存取，加索引只会增加写入成本。
  */
 db.version(5)
   .stores({

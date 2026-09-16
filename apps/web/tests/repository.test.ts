@@ -176,3 +176,103 @@ describe("笔记本嵌套", () => {
     expect(note.notebookId).toBeNull();
   });
 });
+
+describe("手动顺序", () => {
+  it("moveBy：相邻交换并整体编号，边界返回 false", async () => {
+    for (let i = 0; i < 3; i++) await noteRepo.create({ notebookId: "nb1" });
+    const before = (await noteRepo.listIndex())
+      .filter((n) => n.notebookId === "nb1")
+      .map((n) => n.id);
+    expect(before).toHaveLength(3);
+
+    await noteRepo.moveBy(before[0]!, 1);
+    const after = (await noteRepo.listIndex())
+      .filter((n) => n.notebookId === "nb1")
+      .map((n) => n.id);
+    expect(after).toEqual([before[1], before[0], before[2]]);
+
+    expect(await noteRepo.moveBy(after[0]!, -1)).toBe(false);
+    expect(await noteRepo.moveBy(after[2]!, 1)).toBe(false);
+  });
+
+  it("排序不刷新 updatedAt（列表上的相对时间不被排序操作干扰）", async () => {
+    for (let i = 0; i < 3; i++) await noteRepo.create({ notebookId: "nb1" });
+    // 取当前显示顺序的第一条：创建时间可能同毫秒，不假设「创建顺序 = 显示顺序」
+    const first = (await noteRepo.listIndex())[0]!.id;
+    const before = (await db.notes.get(first))!.updatedAt;
+
+    expect(await noteRepo.moveBy(first, 1)).toBe(true);
+
+    const after = (await db.notes.get(first))!;
+    expect(after.updatedAt).toBe(before);
+    expect(after.sortOrder).not.toBeNull();
+  });
+
+  it("moveToPosition：把笔记放到容器内指定位置", async () => {
+    for (let i = 0; i < 3; i++) await noteRepo.create({ notebookId: "nb1" });
+    const start = (await noteRepo.listIndex()).map((n) => n.id); // 当前显示顺序
+    const [x, y, z] = start as [string, string, string];
+
+    await noteRepo.moveToPosition(z, "nb1", 0);
+
+    const order = (await noteRepo.listIndex()).map((n) => n.id);
+    expect(order).toEqual([z, x, y]);
+  });
+
+  it("moveToPosition：跨容器同时改分类，并维护 cat 派生索引", async () => {
+    const from = await notebookRepo.create({ name: "from", color: "#111" });
+    const to = await notebookRepo.create({ name: "to", color: "#222" });
+    const id = await noteRepo.create({ notebookId: from });
+
+    await noteRepo.moveToPosition(id, to, 0);
+
+    const note = (await db.notes.get(id))!;
+    expect(note.notebookId).toBe(to);
+    expect(catOf(note)).toBe(to);
+    expect((await noteRepo.list({ notebookId: "none" })).total).toBe(0);
+    expect((await noteRepo.list({ notebookId: to })).total).toBe(1);
+  });
+
+  it("resetOrder：清空编号，回到默认排序", async () => {
+    const a = await noteRepo.create({ notebookId: null });
+    const b = await noteRepo.create({ notebookId: null });
+    await noteRepo.moveToPosition(a, null, 1);
+    expect((await noteRepo.listIndex())[0]!.id).toBe(b);
+
+    await noteRepo.resetOrder(null);
+
+    const rows = await db.notes.toArray();
+    expect(rows.every((r) => r.sortOrder == null)).toBe(true);
+    // 默认排序下两者仍在（顺序按时间，创建时间相同则按 id 稳定）
+    expect((await noteRepo.listIndex()).map((n) => n.id).sort()).toEqual(
+      [a, b].sort()
+    );
+  });
+
+  it("pinToTop：手动顺序容器里置顶 = 移到最前（pinned 不决定位置）", async () => {
+    const a = await noteRepo.create({ notebookId: "nb1" });
+    const b = await noteRepo.create({ notebookId: "nb1" });
+    await noteRepo.moveToPosition(a, "nb1", 1); // a 落到 b 之后
+    expect((await noteRepo.listIndex())[0]!.id).toBe(b);
+
+    await noteRepo.pinToTop(b);
+
+    const top = (await noteRepo.listIndex())[0]!;
+    expect(top.id).toBe(b);
+    expect(top.pinned).toBe(true);
+  });
+
+  it("新建笔记落入已手动排序的容器时置于最前", async () => {
+    for (let i = 0; i < 2; i++) await noteRepo.create({ notebookId: "nb1" });
+    const ids = (await noteRepo.listIndex()).map((n) => n.id);
+    await noteRepo.moveBy(ids[0]!, 1); // 触发该容器进入手动顺序
+    const ordered = (await noteRepo.listIndex()).map((n) => n.id);
+
+    const fresh = await noteRepo.create({ notebookId: "nb1" });
+
+    expect((await noteRepo.listIndex())[0]!.id).toBe(fresh);
+    const created = (await db.notes.get(fresh))!;
+    expect(created.sortOrder).not.toBeNull();
+    expect(ordered).toHaveLength(2);
+  });
+});

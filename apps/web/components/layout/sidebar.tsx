@@ -1,10 +1,19 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { useRouter } from "next/navigation";
 import { formatDistanceToNowStrict } from "date-fns";
 import { zhCN } from "date-fns/locale";
 import {
+  ArrowDown,
+  ArrowUp,
   Book,
   ChevronRight,
   FileText,
@@ -12,6 +21,7 @@ import {
   Pencil,
   Pin,
   Plus,
+  RotateCcw,
   Tag as TagIcon,
   Trash2,
 } from "lucide-react";
@@ -38,6 +48,11 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { NotebookDialog } from "@/components/notebooks/notebook-dialog";
+import {
+  noteRowDragProps,
+  useNoteDrag,
+  type DropTarget,
+} from "@/components/layout/use-note-drag";
 import {
   useNotebooks,
   useNotesIndex,
@@ -86,24 +101,62 @@ interface NoteRowActions {
   onOpenNote: (id: string) => void;
   onTogglePin: (id: string, pinned: boolean) => void;
   onDeleteNote: (note: NoteIndexItem) => void;
+  /** 上移 / 下移一位（菜单微调；手机与键盘用户的主路径） */
+  onMoveNote: (id: string, direction: -1 | 1) => void;
+  /** 恢复该容器的默认顺序（置顶 + 更新时间倒序） */
+  onResetOrder: (notebookId: string | null) => void;
+  /** 拖拽：正在被拖的笔记 id 与当前落点（用于半透明与插入指示线） */
+  draggingId: string | null;
+  dropTarget: DropTarget | null;
+  onDragStart: (
+    e: ReactPointerEvent<HTMLElement>,
+    note: NoteIndexItem
+  ) => void;
 }
 
-/** 树内笔记行：图标 + 标题 + 相对时间 + 悬浮操作 */
+/**
+ * 树内笔记行：图标 + 标题 + 相对时间 + 悬浮操作。
+ *
+ * 顺序调整有三条路径，都落在这行上：
+ * - 桌面：按住行主体拖动（useNoteDrag，落点由 data-* 属性描述）
+ * - 菜单「上移 / 下移」：手机与键盘用户的主路径
+ * - 菜单「恢复默认顺序」：仅在该容器已手动排序过时出现
+ */
 function NoteRow({
   note,
   depth,
+  index = 0,
+  canMoveUp = false,
+  canMoveDown = false,
+  manualOrder = false,
+  sortable = true,
   actions,
 }: {
   note: NoteIndexItem;
   depth: number;
+  /** 该笔记在其容器内的下标（拖拽落点计算用） */
+  index?: number;
+  canMoveUp?: boolean;
+  canMoveDown?: boolean;
+  /** 所在容器是否已进入手动顺序（决定是否显示「恢复默认顺序」） */
+  manualOrder?: boolean;
+  /**
+   * 是否可调顺序。混合视图（「全部笔记」展开后的列表）里没有「容器内第 n 位」
+   * 这个概念，拖拽与上移下移都会落到错误的容器位置，故整体关闭。
+   */
+  sortable?: boolean;
   actions: NoteRowActions;
 }) {
   const active = note.id === actions.activeNoteId;
+  const dragging = actions.draggingId === note.id;
   return (
     <div
+      {...(sortable ? noteRowDragProps(note, index) : {})}
+      onPointerDown={sortable ? (e) => actions.onDragStart(e, note) : undefined}
       className={cn(
-        "group relative flex w-full items-center rounded-md pr-1.5 text-sm transition-colors hover:bg-accent",
-        active && "bg-accent text-accent-foreground"
+        "group relative flex w-full items-center rounded-md pr-1.5 text-sm transition-colors hover:bg-accent [-webkit-touch-callout:none]",
+        active && "bg-accent text-accent-foreground",
+        dragging && "opacity-40"
       )}
       style={{ paddingLeft: indentOf(depth) }}
     >
@@ -134,6 +187,7 @@ function NoteRow({
         <DropdownMenuTrigger asChild>
           <button
             type="button"
+            data-no-drag
             aria-label={`笔记「${note.title}」操作`}
             className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-opacity hover:bg-background hover:text-foreground lg:opacity-0 lg:group-hover:opacity-100 lg:focus:opacity-100"
           >
@@ -151,6 +205,28 @@ function NoteRow({
             {note.pinned ? "取消置顶" : "置顶"}
           </DropdownMenuItem>
           <DropdownMenuItem
+            disabled={!canMoveUp}
+            onClick={() => actions.onMoveNote(note.id, -1)}
+          >
+            <ArrowUp className="mr-2 h-4 w-4" />
+            上移
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={!canMoveDown}
+            onClick={() => actions.onMoveNote(note.id, 1)}
+          >
+            <ArrowDown className="mr-2 h-4 w-4" />
+            下移
+          </DropdownMenuItem>
+          {manualOrder && (
+            <DropdownMenuItem
+              onClick={() => actions.onResetOrder(note.notebookId ?? null)}
+            >
+              <RotateCcw className="mr-2 h-4 w-4" />
+              恢复默认顺序
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuItem
             className="text-destructive focus:text-destructive"
             onClick={() => actions.onDeleteNote(note)}
           >
@@ -163,14 +239,20 @@ function NoteRow({
   );
 }
 
-/** 某节点下的笔记行列表：分页渲染 + 滚动到底自动加载 */
+/** 某节点下的笔记行列表：分页渲染 + 滚动到底自动加载 + 拖拽落点指示线 */
 function TreeNoteRows({
   notes,
   depth,
+  notebookId,
+  mixed = false,
   actions,
 }: {
   notes: NoteIndexItem[];
   depth: number;
+  /** 该块所属容器（null = 未分类）：落点匹配与手动顺序判定都依赖它 */
+  notebookId: string | null;
+  /** 混合视图（跨容器的「全部笔记」列表）：关闭全部顺序调整入口 */
+  mixed?: boolean;
   actions: NoteRowActions;
 }) {
   const [limit, setLimit] = useState(TREE_PAGE_SIZE);
@@ -201,22 +283,57 @@ function TreeNoteRows({
     return () => observer.disconnect();
   }, [hasMore]);
 
+  // 该容器已手动排序过 → 菜单里出现「恢复默认顺序」（混合视图不提供）
+  const sortable = !mixed;
+  const manualOrder = sortable && notes.some((n) => n.sortOrder != null);
+  const containerKey = notebookId ?? "";
+  const dropIndex =
+    sortable && actions.dropTarget?.containerKey === containerKey
+      ? actions.dropTarget.index
+      : -1;
+
+  /** 插入指示线：画在拖拽目标位置上（与笔记行同缩进） */
+  const dropLine = (i: number) =>
+    i === dropIndex ? (
+      <div
+        aria-hidden
+        className="my-0.5 h-0.5 rounded-full bg-primary"
+        style={{ marginLeft: indentOf(depth + 1) + 4 }}
+      />
+    ) : null;
+
   if (notes.length === 0) {
     return (
-      <div
-        className="py-1 pr-2 text-xs text-muted-foreground"
-        style={{ paddingLeft: indentOf(depth + 1) }}
-      >
-        暂无笔记
-      </div>
+      <>
+        {dropLine(0)}
+        <div
+          className="py-1 pr-2 text-xs text-muted-foreground"
+          style={{ paddingLeft: indentOf(depth + 1) }}
+        >
+          暂无笔记
+        </div>
+      </>
     );
   }
 
   return (
     <div>
-      {visible.map((n) => (
-        <NoteRow key={n.id} note={n} depth={depth + 1} actions={actions} />
+      {visible.map((n, i) => (
+        <Fragment key={n.id}>
+          {dropLine(i)}
+          <NoteRow
+            note={n}
+            depth={depth + 1}
+            index={i}
+            canMoveUp={sortable && i > 0}
+            canMoveDown={sortable && i < notes.length - 1}
+            manualOrder={manualOrder}
+            sortable={sortable}
+            actions={actions}
+          />
+        </Fragment>
       ))}
+      {dropLine(visible.length)}
       {hasMore && <div ref={sentinelRef} aria-hidden className="h-1" />}
     </div>
   );
@@ -273,6 +390,8 @@ function NotebookNode({
           selected && "bg-accent text-accent-foreground"
         )}
         style={{ paddingLeft: indentOf(depth) }}
+        // 拖笔记到这个笔记本行上 = 移入该笔记本（置于最前）
+        data-note-drop-container={notebook.id}
       >
         <TreeGuides levels={depth} />
         {hasChildren ? (
@@ -370,7 +489,12 @@ function NotebookNode({
                   : undefined
               }
             >
-              <TreeNoteRows notes={childNotes} depth={depth} actions={actions} />
+              <TreeNoteRows
+                notes={childNotes}
+                depth={depth}
+                notebookId={notebook.id}
+                actions={actions}
+              />
             </div>
           )}
         </div>
@@ -401,7 +525,18 @@ export function SidebarContent() {
   const toggleTreeExpandedAll = useUIStore((s) => s.toggleTreeExpandedAll);
   const toggleTreeExpandedId = useUIStore((s) => s.toggleTreeExpandedId);
 
-  const { createNote, deleteNote, togglePin } = useNoteActions();
+  const {
+    createNote,
+    deleteNote,
+    togglePin,
+    moveNote,
+    moveNoteToPosition,
+    resetOrder,
+  } = useNoteActions();
+  // 桌面拖拽：落点提交为「放到目标容器第 n 位」（跨容器即同时改分类）
+  const { draggingId, dropTarget, startDrag } = useNoteDrag(
+    (id, notebookId, index) => void moveNoteToPosition(id, notebookId, index)
+  );
   const { results: searchResults, searching, isSearching } =
     useSearchResults(searchQuery);
 
@@ -496,8 +631,13 @@ export function SidebarContent() {
   const actions: NoteRowActions = {
     activeNoteId,
     onOpenNote: handleOpenNote,
-    onTogglePin: togglePin,
+    onTogglePin: (id, pinned) => void togglePin(id, pinned),
     onDeleteNote: setPendingDeleteNote,
+    onMoveNote: (id, direction) => void moveNote(id, direction),
+    onResetOrder: (notebookId) => void resetOrder(notebookId),
+    draggingId,
+    dropTarget,
+    onDragStart: startDrag,
   };
 
   const bundle: TreeBundle = {
@@ -531,7 +671,11 @@ export function SidebarContent() {
         <span className="font-semibold">QuickWiki</span>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      {/* 拖拽排序时的滚动容器（useNoteDrag 靠它做靠近边缘自动滚动） */}
+      <div
+        className="min-h-0 flex-1 overflow-y-auto p-3"
+        data-note-drag-scroll
+      >
         {/* 新建笔记本 */}
         <Button
           variant="outline"
@@ -565,8 +709,15 @@ export function SidebarContent() {
                   找到 {searchResults?.length} 条结果 ·
                   全局搜索，不限当前笔记本 / 标签
                 </p>
+                {/* 搜索结果是 Note（缺索引行的 sortOrder），补齐后再复用行组件 */}
                 {(searchResults ?? []).map((n) => (
-                  <NoteRow key={n.id} note={n} depth={0} actions={actions} />
+                  <NoteRow
+                    key={n.id}
+                    note={{ ...n, sortOrder: n.sortOrder ?? null }}
+                    depth={0}
+                    sortable={false}
+                    actions={actions}
+                  />
                 ))}
               </>
             )}
@@ -623,6 +774,8 @@ export function SidebarContent() {
               <TreeNoteRows
                 notes={filteredIndex}
                 depth={0}
+                notebookId={null}
+                mixed
                 actions={actions}
               />
             )}
@@ -673,6 +826,8 @@ export function SidebarContent() {
                 )}
                 style={{ paddingLeft: indentOf(0) }}
                 title="不属于任何笔记本的笔记"
+                // 拖笔记到这里 = 移入未分类（置于最前）
+                data-note-drop-container=""
               >
                 {uncategorizedNotes.length > 0 ? (
                   <button
@@ -713,6 +868,7 @@ export function SidebarContent() {
                 <TreeNoteRows
                   notes={uncategorizedNotes}
                   depth={0}
+                  notebookId={null}
                   actions={actions}
                 />
               )}

@@ -1,7 +1,13 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import {
+  Fragment,
+  useEffect,
+  useRef,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import type { Note } from "@quickwiki/shared";
+import type { DropTarget } from "@/components/layout/use-note-drag";
 import { NoteCard } from "./note-card";
 
 interface NoteListProps {
@@ -14,6 +20,14 @@ interface NoteListProps {
   onSelect: (id: string) => void;
   onTogglePin: (id: string, pinned: boolean) => void;
   onRequestDelete: (note: Note) => void;
+  /** 是否提供顺序调整（单容器视图才有「容器内第 n 位」的概念） */
+  sortable?: boolean;
+  onMoveNote?: (id: string, direction: -1 | 1) => void;
+  onResetOrder?: (notebookId: string | null) => void;
+  /** 长按/拖动调整顺序（复用 useNoteDrag 的 state，指示线与侧栏树同一套） */
+  draggingId?: string | null;
+  dropTarget?: DropTarget | null;
+  onDragStart?: (e: ReactPointerEvent<HTMLElement>, note: Note) => void;
 }
 
 export function NoteList({
@@ -25,6 +39,12 @@ export function NoteList({
   onSelect,
   onTogglePin,
   onRequestDelete,
+  sortable = false,
+  onMoveNote,
+  onResetOrder,
+  draggingId = null,
+  dropTarget = null,
+  onDragStart,
 }: NoteListProps) {
   // 滚动到底自动加载：哨兵进入视口（含 200px 预读）触发下一页。
   // pendingRef 保证一批数据回来前不重复触发（loadMore 是纯 setLimit，可重入）
@@ -51,19 +71,41 @@ export function NoteList({
     return () => observer.disconnect();
   }, [hasMore, onLoadMore]);
 
+  // 拖动落点指示线：只在单容器视图里画（混合的「全部笔记」不提供顺序调整）
+  const containerKey = notes[0]?.notebookId ?? "";
+  const dropIndex =
+    sortable && dropTarget?.containerKey === containerKey ? dropTarget.index : -1;
+  const dropLineAt = (i: number) =>
+    i === dropIndex ? (
+      <div aria-hidden className="h-0.5 rounded-full bg-primary" />
+    ) : null;
+
   return (
-    <div className="space-y-2 p-3">
-      {notes.map((note) => (
-        <NoteCard
-          key={note.id}
-          note={note}
-          active={note.id === activeNoteId}
-          compact={compact}
-          onSelect={() => onSelect(note.id)}
-          onTogglePin={() => onTogglePin(note.id, note.pinned)}
-          onDelete={() => onRequestDelete(note)}
-        />
+    <div className="space-y-2 p-3" data-note-list>
+      {notes.map((note, index) => (
+        <Fragment key={note.id}>
+          {dropLineAt(index)}
+          <NoteCard
+            note={note}
+            active={note.id === activeNoteId}
+            compact={compact}
+            onSelect={() => onSelect(note.id)}
+            onTogglePin={() => onTogglePin(note.id, note.pinned)}
+            onDelete={() => onRequestDelete(note)}
+            sortable={sortable}
+            canMoveUp={sortable && index > 0}
+            canMoveDown={sortable && index < notes.length - 1}
+            manualOrder={sortable && notes.some((n) => n.sortOrder != null)}
+            onMoveUp={() => onMoveNote?.(note.id, -1)}
+            onMoveDown={() => onMoveNote?.(note.id, 1)}
+            onResetOrder={() => onResetOrder?.(note.notebookId ?? null)}
+            dragIndex={index}
+            dragging={draggingId === note.id}
+            onDragStart={sortable ? (e) => onDragStart?.(e, note) : undefined}
+          />
+        </Fragment>
       ))}
+      {dropLineAt(notes.length)}
       {hasMore && <div ref={sentinelRef} aria-hidden className="h-1" />}
     </div>
   );

@@ -2,7 +2,7 @@
 -- QuickWiki 云端同步 · Supabase Schema
 -- 在 Supabase 控制台 SQL Editor 中整体执行一次即可。
 -- 已部署旧版 schema 的存量库请按序改执行 migrations/ 下相应增量迁移
--- （2026-09-11 同步加固、2026-09-15 笔记本嵌套）。
+-- （2026-09-11 同步加固、2026-09-15 笔记本嵌套、2026-09-16 笔记手动顺序）。
 -- 设计要点：
 --   * uuid 主键复用客户端本地生成的 ID（crypto.randomUUID），无映射成本
 --   * updated_at 由客户端写入（编辑时间元数据），服务端不覆盖
@@ -42,6 +42,8 @@ create table if not exists public.notes (
   content           text not null default '',
   tags              text[] not null default '{}',
   pinned            boolean not null default false,
+  -- 手动顺序（容器内越小越靠前，步长 1024）；null = 未参与手动排序
+  sort_order        double precision,
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now(),
   server_updated_at timestamptz not null default now(),

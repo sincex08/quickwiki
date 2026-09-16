@@ -406,6 +406,8 @@ interface RemoteNote extends RemoteRowMeta {
   content: string;
   tags: string[] | null;
   pinned: boolean;
+  /** 手动顺序（容器内）；服务端缺列时为 undefined —— 见 pushNote 的降级重试 */
+  sort_order?: number | null;
 }
 
 interface RemoteNotebook extends RemoteRowMeta {
@@ -579,6 +581,25 @@ async function pushTombstone(
   throw new Error(`${table}:${entry.entityId} 删除冲突，稍后重试`);
 }
 
+/**
+ * 服务端 notes 是否有 sort_order 列（2026-09-16 迁移加入）。
+ * 每个会话只探测一次并缓存：没跑迁移时降级为「顺序仅本机生效」，
+ * 而不是让 push 持续失败把 outbox 堵死（那会连带堵住正文同步）。
+ */
+let sortOrderColumnFlag: boolean | null = null;
+
+async function hasSortOrderColumn(sb: SupabaseClient): Promise<boolean> {
+  if (sortOrderColumnFlag !== null) return sortOrderColumnFlag;
+  const probe = await sb.from("notes").select("sort_order").limit(1);
+  sortOrderColumnFlag = !probe.error;
+  if (!sortOrderColumnFlag) {
+    console.warn(
+      "服务端 notes 表缺少 sort_order 列：手动顺序仅本机生效，请在 Supabase 执行迁移 SQL"
+    );
+  }
+  return sortOrderColumnFlag;
+}
+
 async function pushNote(
   sb: SupabaseClient,
   entry: OutboxEntry
@@ -591,6 +612,10 @@ async function pushNote(
     return;
   }
 
+  // 服务端还没执行 sort_order 迁移时降级为不写该列：顺序仅本地生效，
+  // 但绝不会因为一个可选列让 outbox 变毒丸（推不动 → 这台设备的编辑全堵住）
+  const includeSortOrder = await hasSortOrderColumn(sb);
+
   // 正文即协议引用（quickwiki-att://），本地与服务端同内容、零改写
   const row = {
     id: note.id,
@@ -601,6 +626,7 @@ async function pushNote(
     content: note.content,
     tags: note.tags,
     pinned: note.pinned,
+    ...(includeSortOrder ? { sort_order: note.sortOrder ?? null } : {}),
     created_at: new Date(note.createdAt).toISOString(),
     updated_at: new Date(note.updatedAt).toISOString(),
     // 内容更新顺带清除墓碑（复活路径）
@@ -1020,6 +1046,8 @@ async function applyRemoteNote(row: RemoteNote, force = false): Promise<void> {
       createdAt: new Date(row.created_at).getTime(),
       updatedAt: new Date(row.updated_at).getTime(),
       pinned: row.pinned,
+      // 服务端缺列（未跑迁移）时为 undefined → 归一为 null，回到默认排序
+      sortOrder: row.sort_order ?? null,
       syncVersion: row.version,
     };
     await db.transaction("rw", db.notes, db.noteTags, db.tags, async () => {

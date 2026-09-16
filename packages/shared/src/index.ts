@@ -23,6 +23,17 @@ export interface Note {
   updatedAt: number;
   pinned: boolean;
   /**
+   * 手动顺序（「同一容器」= 同一笔记本或未分类，各自独立）。
+   *
+   * - `null` / `undefined`：未参与手动排序 —— 该容器只要有一条为 null 之外的值，
+   *   就整体进入「手动顺序」模式（此时顺序完全由本字段决定，`pinned` 不再影响位置）；
+   *   容器内全部为 null 时按 `pinned` + `updatedAt` 倒序（默认行为，不变）。
+   * - 数值越小越靠前，步长 1024，便于在两值之间插入。
+   * - 跨容器（「全部笔记」混合视图）没有全局手动顺序：混合视图按容器分块呈现，
+   *   块内遵守各自的顺序，块间按块内首条的时间倒序。
+   */
+  sortOrder?: number | null;
+  /**
    * 云同步乐观锁版本：本地最后一次已知的云端 version 值。
    * null/undefined 表示从未与云端核对过（新创建或旧版本数据），
    * 由 sync-engine 在 pull/成功 push 后写回；本地编辑不修改此字段。

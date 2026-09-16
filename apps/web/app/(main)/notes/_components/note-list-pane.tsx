@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/notes/empty-state";
 import { NoteList } from "@/components/notes/note-list";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import { useNoteDrag } from "@/components/layout/use-note-drag";
 import { useNotebooks, useNotes } from "@/hooks/use-data";
 import { useSearchResults } from "@/hooks/use-search";
 import { useNoteActions } from "@/hooks/use-note-actions";
@@ -91,7 +92,18 @@ export function NoteListPane() {
   const activeNoteId = useUIStore((s) => s.activeNoteId);
   const openNote = useUIStore((s) => s.openNote);
 
-  const { createNote, deleteNote, togglePin } = useNoteActions();
+  const {
+    createNote,
+    deleteNote,
+    togglePin,
+    moveNote,
+    moveNoteToPosition,
+    resetOrder,
+  } = useNoteActions();
+  // 手机主列表的长按拖动：与侧栏树共用同一套拖拽逻辑（落点/指示线都靠同一份 state）
+  const { draggingId, dropTarget, startDrag } = useNoteDrag(
+    (id, notebookId, index) => void moveNoteToPosition(id, notebookId, index)
+  );
 
   const { items, loading, hasMore, loadMore, total } = useNotes({
     notebookId: notebookFilter,
@@ -105,6 +117,10 @@ export function NoteListPane() {
   const notes = isSearching ? searchResults ?? [] : items;
   const listLoading = isSearching ? searching : loading;
   const titleOnly = useUIStore((s) => s.noteListTitleOnly);
+
+  // 「全部笔记」是跨笔记本的混合列表，没有「容器内第 n 位」的概念，
+  // 因此只在选中具体笔记本 / 未分类时提供顺序调整（与侧栏树一致）
+  const sortable = !isSearching && notebookFilter !== null;
 
   // ===== 删除确认 =====
   const [pendingDelete, setPendingDelete] = useState<Note | null>(null);
@@ -120,7 +136,8 @@ export function NoteListPane() {
     <div className="flex h-full min-h-0 flex-col">
       <FilterChips />
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      {/* 拖动时靠它做靠近边缘自动滚动 */}
+      <div className="min-h-0 flex-1 overflow-y-auto" data-note-drag-scroll>
         {/* 搜索是全局的：结果可能落在当前笔记本/标签过滤之外，明示避免误解 */}
         {isSearching && !listLoading && notes.length > 0 && (
           <p className="px-3 pt-3 text-xs text-muted-foreground">
@@ -161,6 +178,12 @@ export function NoteListPane() {
             onSelect={(id) => openNote(id)}
             onTogglePin={togglePin}
             onRequestDelete={setPendingDelete}
+            sortable={sortable}
+            draggingId={draggingId}
+            dropTarget={dropTarget}
+            onDragStart={startDrag}
+            onMoveNote={(id, direction) => void moveNote(id, direction)}
+            onResetOrder={(notebookId) => void resetOrder(notebookId)}
           />
         )}
       </div>

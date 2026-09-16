@@ -4,7 +4,7 @@
 
 - **形态**：纯静态 Web 应用（Next.js 14 `output: 'export'`），可部署到任意静态托管/CDN
 - **数据**：浏览器 IndexedDB（Dexie），内容以 **Markdown 原生存储**
-- **能力**：三模式 Markdown 编辑（所见即所得/源码/预览）、每笔记附件库（图片唯一来源 + 抽屉管理）、表格/任务清单/链接、中文全文搜索（增量索引+持久化）、笔记本（可嵌套分组，「文件夹」= 容器笔记本）/标签/置顶、侧栏树状导航（笔记本→笔记，桌面双栏布局）、MD 与 ZIP 导出、PWA 离线、深色模式、响应式
+- **能力**：三模式 Markdown 编辑（所见即所得/源码/预览）、每笔记附件库（图片唯一来源 + 抽屉管理）、表格/任务清单/链接、中文全文搜索（增量索引+持久化）、笔记本（可嵌套分组，「文件夹」= 容器笔记本）/标签/置顶、**笔记手动排序（桌面拖动 / 手机长按拖动 / 菜单上移下移 / 拖到笔记本即改分类 / 恢复默认顺序）**、侧栏树状导航（笔记本→笔记，桌面双栏布局）、MD 与 ZIP 导出、PWA 离线、深色模式、响应式
 - **架构保障**：所有数据访问经由 `NoteRepository` / `NotebookRepository` 抽象层（`apps/web/lib/data/repository.ts`），UI 不直接依赖 Dexie —— 这是后续上云的切换点
 
 ## Phase 2：云端同步（多设备）—— Supabase 已上线 ✅
@@ -17,7 +17,7 @@
 | 模块 | 实现 | 位置 |
 |------|------|------|
 | 表结构 + RLS + 存储桶 | `profiles` / `notebooks` / `notes` / `attachments`（uuid 主键复用本地 ID、`tags text[]`、`deleted_at` 墓碑、`updated_at` 客户端写入、`server_updated_at`/`version` 服务端触发器维护）+ 行级安全 + `note-images` 桶 | `supabase/schema.sql` |
-| 存量库迁移 | 2026-09-11 同步加固：服务端权威时间戳 + 乐观锁版本号 + Realtime publication；2026-09-12 附件表；2026-09-15 笔记本嵌套（`notebooks.parent_id`） | `supabase/migrations/2026-09-11-sync-hardening.sql`、`supabase/migrations/2026-09-12-attachments.sql`、`supabase/migrations/2026-09-15-notebook-nesting.sql` |
+| 存量库迁移 | 2026-09-11 同步加固：服务端权威时间戳 + 乐观锁版本号 + Realtime publication；2026-09-12 附件表；2026-09-15 笔记本嵌套（`notebooks.parent_id`）；2026-09-16 笔记手动顺序（`notes.sort_order`，未执行时客户端自动降级为「顺序仅本机生效」） | `supabase/migrations/` |
 | 客户端初始化 | 未配置环境变量时返回 null；但登录门禁（`RequireAuth`）会停在 /login 的「云同步未配置」提示，即**本地跑通功能必须自备 `.env.local`** | `apps/web/lib/supabase/client.ts` |
 | 同步引擎 | outbox 推送（乐观锁条件更新 `.eq version`，冲突按「本地编辑时间 vs 服务端 `server_updated_at`」LWW 裁决）/ 增量拉取（`server_updated_at > cursor` 服务端时钟游标 + 分页循环，与设备时钟无关）/ 墓碑删除带时间裁决（本地更新的编辑可复活）/ 删除走乐观锁 / 队列单条失败不阻塞 | `apps/web/lib/sync/sync-engine.ts` |
 | Realtime | 订阅 notes/notebooks/attachments 变更，远端写入 1.5s 防抖自动拉取，多设备秒级收敛 | 同上 |
@@ -102,6 +102,24 @@ Repository 抽象与本地 outbox 机制可复用。
 - **侧栏笔记本角标口径 = 直属笔记数**（与该笔记本下展开的条目、选中后的列表条数三者一致）。
   角标直接由侧栏树已加载的索引（`listIndex` 结果）派生，不再单独查计数：既不会与列表分叉，
   标签过滤时也随之收窄，新增/删除/移动同帧更新。
+- **笔记手动顺序 = 每容器独立，且不刷新 `updatedAt`**：顺序存 `Note.sortOrder`（容器内越小越靠前，
+  步长 1024；见 `lib/data/note-order.ts`）。**容器 = 单个笔记本或未分类**，各自独立判定：
+  容器内存在任意一条已编号即进入「手动模式」，此时顺序完全由 `sortOrder` 决定，
+  `pinned` 只作可见标记（「置顶」实现为「移到最前」）。
+  - 排序**刻意不刷新 `updatedAt`**：否则列表上的「x 分钟前」会跳到「刚刚」，
+    且「恢复默认顺序」后所有笔记时间塌缩到同一刻、默认排序退化成按 id 排序。
+    同步不需要它推进（push 走乐观锁条件更新 + 成功后写回 `syncVersion`），
+    代价是并发冲突时顺序可能按 LWW 被远端覆盖，可接受。
+  - 「全部笔记」是跨容器混合视图：按容器**分块**呈现（块内遵守各自顺序，块间按块内最近更新倒序），
+    并关闭拖拽 / 上移下移 —— 那里没有「容器内第 n 位」的概念，硬做会落到错误的容器位置。
+  - 服务端未执行 `sort_order` 迁移时：`hasSortOrderColumn()` 每个会话探测一次并降级为不写该列
+    （顺序仅本机生效），避免一个可选列把 outbox 堵成毒丸、连带堵住正文同步。
+  - 拖动交互 `components/layout/use-note-drag.tsx`（侧栏树与手机卡片列表共用同一套）：
+    **鼠标**位移超过 4px 即进入拖动；**触摸**按住约 400ms 才进入（长按期间手指移动超过 8px
+    视为「用户在滚列表」直接放弃），进入后 `preventDefault` 掉 `touchmove` 并给该行锁
+    `touch-action: none`，否则页面会跟着手指滚；同时压掉长按呼出的右键菜单，结束时吞掉那次
+    click（避免拖完顺手打开笔记）。手机的卡片左滑与长按拖动互斥。
+    降级路径：菜单里的「上移 / 下移」在两端都可用，不依赖拖拽。
 - **为什么注册不提供密码**：密码注册要先过「确认邮件」再回来登录两道坎，失败时（Supabase 防枚举）
   界面拿不到「这个邮箱已注册」之外的信息。改成**邮箱链接即建号**：注册与登录是同一条通道，
   少一条会卡住的分支；密码留到登录后在账号管理里设置（`updateUser({ password })`），
