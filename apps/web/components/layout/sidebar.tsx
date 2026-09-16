@@ -40,7 +40,6 @@ import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { NotebookDialog } from "@/components/notebooks/notebook-dialog";
 import {
   useNotebooks,
-  useNoteCounts,
   useNotesIndex,
   useTags,
 } from "@/hooks/use-data";
@@ -52,8 +51,34 @@ import type { NoteIndexItem } from "@/lib/data/repository";
 
 /** 每个展开节点初始渲染的笔记行数，滚到底自动追加 */
 const TREE_PAGE_SIZE = 50;
-/** 树节点每层缩进（px） */
-const DEPTH_INDENT = 14;
+/** 树最左起始内边距（根级「全部笔记 / 未分类 / 顶层笔记本」共用，左边缘对齐） */
+const TREE_PAD = 6;
+/** 每层缩进（px）：拉开层级差，让「笔记本 / 子笔记本 / 笔记」一眼可辨 */
+const DEPTH_INDENT = 18;
+/** 某一层的内容起点 */
+const indentOf = (level: number) => TREE_PAD + level * DEPTH_INDENT;
+/** 某一层引导线的 x：压在折叠箭头（h-5 w-5）的中心线上 */
+const guideX = (level: number) => indentOf(level) + 10;
+
+/**
+ * 层级引导线：为每一层祖先画一条细竖线，连续贯穿整棵子树。
+ * 只靠缩进时，深层条目容易被看成同级；竖线让「这条挂在谁下面」不用数像素。
+ */
+function TreeGuides({ levels }: { levels: number }) {
+  if (levels <= 0) return null;
+  return (
+    <>
+      {Array.from({ length: levels }, (_, level) => (
+        <span
+          key={level}
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 w-px bg-muted-foreground/30"
+          style={{ left: guideX(level) - 0.5 }}
+        />
+      ))}
+    </>
+  );
+}
 
 /** 笔记行共用的回调（由 SidebarContent 统一提供） */
 interface NoteRowActions {
@@ -63,7 +88,7 @@ interface NoteRowActions {
   onDeleteNote: (note: NoteIndexItem) => void;
 }
 
-/** 树内笔记行：标题 + 相对时间 + 悬浮操作 */
+/** 树内笔记行：图标 + 标题 + 相对时间 + 悬浮操作 */
 function NoteRow({
   note,
   depth,
@@ -77,17 +102,23 @@ function NoteRow({
   return (
     <div
       className={cn(
-        "group flex w-full items-center rounded-md pr-1.5 text-sm transition-colors hover:bg-accent",
+        "group relative flex w-full items-center rounded-md pr-1.5 text-sm transition-colors hover:bg-accent",
         active && "bg-accent text-accent-foreground"
       )}
-      style={{ paddingLeft: 8 + depth * DEPTH_INDENT }}
+      style={{ paddingLeft: indentOf(depth) }}
     >
+      <TreeGuides levels={depth} />
       <button
         type="button"
         onClick={() => actions.onOpenNote(note.id)}
         className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden py-1.5 text-left"
         title={note.title}
       >
+        {/* 小文件图标：与笔记本的色点区分「这一行是笔记」，也让笔记块自成一段 */}
+        <FileText
+          className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70"
+          aria-hidden
+        />
         {note.pinned && (
           <Pin className="h-3 w-3 shrink-0 fill-primary text-primary" />
         )}
@@ -174,7 +205,7 @@ function TreeNoteRows({
     return (
       <div
         className="py-1 pr-2 text-xs text-muted-foreground"
-        style={{ paddingLeft: 8 + (depth + 1) * DEPTH_INDENT }}
+        style={{ paddingLeft: indentOf(depth + 1) }}
       >
         暂无笔记
       </div>
@@ -195,7 +226,6 @@ function TreeNoteRows({
 interface TreeBundle {
   childNotebooksOf: Map<string | null, Notebook[]>;
   notesByNotebook: Map<string, NoteIndexItem[]>;
-  countsByNotebook: Record<string, number>;
   expandedSet: Set<string>;
   selectedId: string | null;
   onToggle: (id: string) => void;
@@ -219,7 +249,6 @@ function NotebookNode({
   const {
     childNotebooksOf,
     notesByNotebook,
-    countsByNotebook,
     expandedSet,
     selectedId,
     onToggle,
@@ -240,15 +269,17 @@ function NotebookNode({
     <div>
       <div
         className={cn(
-          "group flex w-full items-center gap-0.5 rounded-md pr-1.5 text-sm transition-colors hover:bg-accent",
+          "group relative flex w-full items-center gap-0.5 rounded-md pr-1.5 text-sm transition-colors hover:bg-accent",
           selected && "bg-accent text-accent-foreground"
         )}
-        style={{ paddingLeft: 4 + depth * DEPTH_INDENT }}
+        style={{ paddingLeft: indentOf(depth) }}
       >
+        <TreeGuides levels={depth} />
         {hasChildren ? (
           <button
             type="button"
             aria-label={expanded ? `收起「${notebook.name}」` : `展开「${notebook.name}」`}
+            aria-expanded={expanded}
             onClick={() => onToggle(notebook.id)}
             className="flex h-5 w-5 shrink-0 items-center justify-center rounded hover:bg-background"
           >
@@ -275,9 +306,12 @@ function NotebookNode({
             className="h-2.5 w-2.5 shrink-0 rounded-full"
             style={{ backgroundColor: notebook.color }}
           />
-          <span className="truncate">{notebook.name}</span>
+          {/* 笔记本名加粗一档：与笔记行的常规字重区分，形成「文件夹 / 文件」的层级感 */}
+          <span className="truncate font-medium">{notebook.name}</span>
+          {/* 角标与展开后的笔记列表同源（都来自 childNotes），
+              不会再出现「数字与条目数对不上」或新增后不跳动 */}
           <span className="ml-auto shrink-0 pl-2 text-xs text-muted-foreground">
-            {countsByNotebook[notebook.id] ?? 0}
+            {childNotes.length}
           </span>
         </button>
         <DropdownMenu>
@@ -311,7 +345,7 @@ function NotebookNode({
         </DropdownMenu>
       </div>
       {expanded && (
-        <div>
+        <div className="pb-1">
           {childNotebooks.map((child) => (
             <NotebookNode
               key={child.id}
@@ -322,7 +356,22 @@ function NotebookNode({
           ))}
           {/* 纯容器（只有子笔记本、没有笔记）不再额外占一行「暂无笔记」 */}
           {(childNotes.length > 0 || childNotebooks.length === 0) && (
-            <TreeNoteRows notes={childNotes} depth={depth} actions={actions} />
+            <div
+              className={cn(
+                // 同时有子笔记本与笔记时：一条细横线把「笔记本块」与「笔记块」分开，
+                // 否则两类条目连成一片，看不出笔记是从这里开始的一组
+                childNotes.length > 0 &&
+                  childNotebooks.length > 0 &&
+                  "mt-1.5 border-t border-border/60 pt-1"
+              )}
+              style={
+                childNotes.length > 0 && childNotebooks.length > 0
+                  ? { marginLeft: indentOf(depth + 1) }
+                  : undefined
+              }
+            >
+              <TreeNoteRows notes={childNotes} depth={depth} actions={actions} />
+            </div>
           )}
         </div>
       )}
@@ -337,7 +386,6 @@ function NotebookNode({
 export function SidebarContent() {
   const router = useRouter();
   const { notebooks } = useNotebooks();
-  const counts = useNoteCounts();
   const { tags } = useTags();
   const { items: noteIndex, loading: indexLoading } = useNotesIndex();
   const searchQuery = useUIStore((s) => s.searchQuery);
@@ -377,7 +425,9 @@ export function SidebarContent() {
     [noteIndex, tagFilter]
   );
 
-  // 按笔记本分组；索引本身已按「置顶优先 + 更新时间倒序」排好，分组保持顺序
+  // 按笔记本分组；索引本身已按「置顶优先 + 更新时间倒序」排好，分组保持顺序。
+  // 节点的笔记角标直接取这些分组数组的长度：角标与树下实际列出的条目
+  // 永远同源同帧，不会出现「数字对不上」或新增/删除后不跳动。
   const { notesByNotebook, uncategorizedNotes } = useMemo(() => {
     const byNb = new Map<string, NoteIndexItem[]>();
     const uncategorized: NoteIndexItem[] = [];
@@ -453,7 +503,6 @@ export function SidebarContent() {
   const bundle: TreeBundle = {
     childNotebooksOf,
     notesByNotebook,
-    countsByNotebook: counts.byNotebook,
     expandedSet,
     selectedId: notebookFilter,
     onToggle: toggleTreeExpandedId,
@@ -527,16 +576,18 @@ export function SidebarContent() {
             {/* ===== 全部笔记（可展开列出全部） ===== */}
             <div
               className={cn(
-                "group flex w-full items-center gap-0.5 rounded-md pr-1.5 text-sm transition-colors hover:bg-accent",
+                "group relative flex w-full items-center gap-0.5 rounded-md pr-1.5 text-sm transition-colors hover:bg-accent",
                 notebookFilter === null &&
                   !tagFilter &&
                   "bg-accent text-accent-foreground"
               )}
+              style={{ paddingLeft: indentOf(0) }}
             >
               {filteredIndex.length > 0 ? (
                 <button
                   type="button"
                   aria-label={treeExpandedAll ? "收起全部笔记" : "展开全部笔记"}
+                  aria-expanded={treeExpandedAll}
                   onClick={toggleTreeExpandedAll}
                   className="flex h-5 w-5 shrink-0 items-center justify-center rounded hover:bg-background"
                 >
@@ -560,8 +611,9 @@ export function SidebarContent() {
               >
                 <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
                 <span className="truncate">全部笔记</span>
+                {/* 角标与树同源：直接取当前树下可见的条数（标签过滤时随之收窄） */}
                 <span className="ml-auto shrink-0 pl-2 text-xs text-muted-foreground">
-                  {counts.all}
+                  {filteredIndex.length}
                 </span>
               </button>
               {/* 与笔记本行的操作按钮等宽占位，保证各计数右对齐 */}
@@ -616,15 +668,17 @@ export function SidebarContent() {
               {/* 未分类：不属于任何笔记本的笔记，同样可展开 */}
               <div
                 className={cn(
-                  "group flex w-full items-center gap-0.5 rounded-md pr-1.5 text-sm transition-colors hover:bg-accent",
+                  "group relative flex w-full items-center gap-0.5 rounded-md pr-1.5 text-sm transition-colors hover:bg-accent",
                   notebookFilter === "none" && "bg-accent text-accent-foreground"
                 )}
+                style={{ paddingLeft: indentOf(0) }}
                 title="不属于任何笔记本的笔记"
               >
                 {uncategorizedNotes.length > 0 ? (
                   <button
                     type="button"
                     aria-label={expandedSet.has("none") ? "收起未分类" : "展开未分类"}
+                    aria-expanded={expandedSet.has("none")}
                     onClick={() => toggleTreeExpandedId("none")}
                     className="flex h-5 w-5 shrink-0 items-center justify-center rounded hover:bg-background"
                   >
@@ -650,7 +704,7 @@ export function SidebarContent() {
                   <span className="h-2.5 w-2.5 shrink-0 rounded-full border border-dashed border-muted-foreground" />
                   <span className="truncate">未分类</span>
                   <span className="ml-auto shrink-0 pl-2 text-xs text-muted-foreground">
-                    {counts.uncategorized}
+                    {uncategorizedNotes.length}
                   </span>
                 </button>
                 <span aria-hidden className="w-6 shrink-0" />

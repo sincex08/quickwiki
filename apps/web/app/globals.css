@@ -60,8 +60,23 @@
 }
 
 /* ===== Tiptap 编辑器样式 ===== */
+/* 正文两侧留白：与头部 / 标题 / 标签行共用同一条左边缘（见 editor-pane 的 PANE_PX） */
 .tiptap {
-  @apply outline-none min-h-full px-1 py-2 text-base leading-7;
+  @apply outline-none min-h-full py-2 text-base leading-7;
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
+@media (min-width: 768px) {
+  .tiptap {
+    padding-left: 1.5rem;
+    padding-right: 1.5rem;
+  }
+}
+@media (min-width: 1024px) {
+  .tiptap {
+    padding-left: 2rem;
+    padding-right: 2rem;
+  }
 }
 
 .tiptap p.is-editor-empty:first-child::before {

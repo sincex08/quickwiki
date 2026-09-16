@@ -1,43 +1,47 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { useUIStore } from "@/stores/use-ui-store";
 import { NoteListPane } from "./_components/note-list-pane";
 import { EditorPane } from "./_components/editor-pane";
 
 /**
- * 深度链接同步：?note=<id> 与全局选中笔记双向绑定。
- * 静态导出下通过客户端 useSearchParams 读取，需包裹在 Suspense 中。
+ * 深链同步：?note=<id> 与全局选中笔记双向绑定。
+ *
+ * 刻意不走 next/navigation：`router.replace` 会发起一次真实的路由导航
+ * （重新请求 RSC payload、页面级 Suspense 回退到空白），表现为「打开/新建
+ * 笔记时整页闪一下」。直接读写地址栏同样保住了刷新与分享链接语义，
+ * 但没有任何重渲染，也不会让组件重新挂载。
  */
 function NoteUrlSync() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
   const activeNoteId = useUIStore((s) => s.activeNoteId);
   const openNote = useUIStore((s) => s.openNote);
   const [hydrated, setHydrated] = useState(false);
 
-  // 首次挂载：从 URL 读取 ?note= 恢复选中状态（支持刷新/分享链接）
+  // 首次挂载：从地址栏恢复 ?note=（支持刷新 / 分享链接 / 浏览器重新打开）
   useEffect(() => {
-    const noteId = searchParams.get("note");
+    const noteId = new URLSearchParams(window.location.search).get("note");
     if (noteId) openNote(noteId);
     setHydrated(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 选中变化：回写 URL（不触发页面滚动）。
-  // 依赖 state 版 hydrated，确保首次写入发生在水合渲染之后，
-  // 避免用旧的 activeNoteId=null 误删 ?note= 参数。
+  // 选中变化：只同步地址栏。用 state 版 hydrated 做闸门，确保首次回写发生在
+  // 恢复选中之后，避免用初始的 activeNoteId=null 误删刚读到的 ?note=。
+  // replaceState 不产生历史记录、不触发路由渲染；history.state 原样透传，
+  // 避免扰动 Next 自身的路由状态。
   useEffect(() => {
     if (!hydrated) return;
-    const current = searchParams.get("note");
-    if (activeNoteId === current) return;
-    if (activeNoteId) {
-      router.replace(`/notes?note=${activeNoteId}`, { scroll: false });
-    } else if (current) {
-      router.replace("/notes", { scroll: false });
-    }
+    const url = new URL(window.location.href);
+    if (activeNoteId === url.searchParams.get("note")) return;
+    if (activeNoteId) url.searchParams.set("note", activeNoteId);
+    else url.searchParams.delete("note");
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${url.pathname}${url.search}${url.hash}`
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeNoteId, hydrated]);
 
@@ -75,9 +79,9 @@ function NotesLayout() {
 
 export default function NotesPage() {
   return (
-    <Suspense fallback={<div className="h-full" />}>
+    <>
       <NoteUrlSync />
       <NotesLayout />
-    </Suspense>
+    </>
   );
 }

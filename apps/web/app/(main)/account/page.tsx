@@ -2,45 +2,80 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import {
-  ArrowLeft,
-  Check,
-  CloudOff,
-  Github,
-  KeyRound,
-  Link2,
-  Loader2,
-} from "lucide-react";
+import { ArrowLeft, Check, CloudOff, KeyRound, ShieldOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import { getSupabase, isSupabaseConfigured } from "@/lib/supabase/client";
+import { getSessionAuthMethod, getSupabase, isSupabaseConfigured } from "@/lib/supabase/client";
 import { getSyncState, subscribeSync, type SyncState } from "@/lib/sync/sync-engine";
 
-const PROVIDER_LABEL: Record<string, string> = {
-  email: "邮箱",
-  github: "GitHub",
+/** 会话签发方式 → 展示名（登录方式只有邮箱：密码 or 邮箱链接） */
+const METHOD_LABEL: Record<string, string> = {
+  password: "邮箱 + 密码",
+  otp: "邮箱链接",
+  email: "邮箱链接",
 };
 
 /**
- * 账号管理：查看登录方式、设置/修改密码、绑定 GitHub。
- * 同一邮箱的密码 / 邮箱链接 / GitHub 在 Supabase 侧归属同一账号。
+ * 「是否设置过密码」本机记录。
+ *
+ * 服务端不暴露「该用户是否设过密码」（identities 里只有 provider，密码与邮箱链接
+ * 同属 email 身份），所以这里在**本机**记一笔：设置成功的时刻。
+ * 另外，本次会话若是用密码签发的（JWT 的 amr=password），那也证明有密码。
+ * 两者都没有时显示「未设置」——换设备后可能显示不准，但按钮动作一样（都是设置/覆盖密码），
+ * 不会做出错误操作。
+ */
+const PWD_MARKER_PREFIX = "quickwiki.pwd-set.";
+
+/** 读取登录方式的最长等待：auth 请求可能卡在令牌刷新上，不能让状态区永远停在「读取中」 */
+const METHOD_TIMEOUT_MS = 8000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`读取超时（${Math.round(ms / 1000)}s）`)), ms)
+    ),
+  ]);
+}
+
+function readPasswordMarker(uid: string | null): string | null {
+  if (!uid || typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(PWD_MARKER_PREFIX + uid);
+  } catch {
+    return null;
+  }
+}
+
+function writePasswordMarker(uid: string | null): string | null {
+  if (!uid || typeof window === "undefined") return null;
+  const at = new Date().toISOString();
+  try {
+    window.localStorage.setItem(PWD_MARKER_PREFIX + uid, at);
+    return at;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 账号管理：看得到「有没有设过密码」，并就地设置 / 修改。
+ * 登录方式只有邮箱一条链路：邮箱链接（免密）与邮箱 + 密码归属同一账号。
  */
 export default function AccountPage() {
   const router = useRouter();
   const [sync, setSync] = useState<SyncState>(() => getSyncState());
-  const [identities, setIdentities] = useState<string[]>([]);
-  const [idLoading, setIdLoading] = useState(true);
+  /** 本次会话的签发方式：password / otp */
+  const [method, setMethod] = useState<string | null>(null);
+  const [methodLoaded, setMethodLoaded] = useState(false);
 
-  // 设置密码表单
+  // 密码
+  const [pwdSetAt, setPwdSetAt] = useState<string | null>(null);
+  const [pwdOpen, setPwdOpen] = useState(false);
   const [pwd, setPwd] = useState("");
   const [pwd2, setPwd2] = useState("");
   const [pwdBusy, setPwdBusy] = useState(false);
   const [pwdMsg, setPwdMsg] = useState<{ ok: boolean; text: string } | null>(null);
-
-  // 绑定 GitHub
-  const [linkBusy, setLinkBusy] = useState(false);
-  const [linkMsg, setLinkMsg] = useState<string | null>(null);
 
   useEffect(() => subscribeSync(setSync), []);
 
@@ -53,25 +88,21 @@ export default function AccountPage() {
     if (ready && !signedIn) router.replace("/login");
   }, [ready, signedIn, router]);
 
-  // 加载已绑定的登录方式
+  // 加载「本次登录方式」与密码状态（登录后才请求）
   useEffect(() => {
     if (!signedIn) return;
-    let active = true;
-    setIdLoading(true);
-    getSupabase()
-      ?.auth.getUserIdentities()
-      .then(({ data }) => {
-        if (!active) return;
-        setIdentities((data?.identities ?? []).map((i) => i.provider));
-        setIdLoading(false);
-      })
-      .catch(() => {
-        if (active) setIdLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [signedIn]);
+    setPwdSetAt(readPasswordMarker(sync.userId));
+    void (async () => {
+      try {
+        setMethod(await withTimeout(getSessionAuthMethod(), METHOD_TIMEOUT_MS));
+      } catch {
+        // 读不到就留空，界面显示「—」；它只用于展示，不影响任何动作
+        setMethod(null);
+      } finally {
+        setMethodLoaded(true);
+      }
+    })();
+  }, [signedIn, sync.userId]);
 
   if (!isSupabaseConfigured) {
     return (
@@ -92,6 +123,9 @@ export default function AccountPage() {
     return <div className="h-full" />;
   }
 
+  /** 本次会话是密码签发的，就一定有密码；否则看本机记录 */
+  const hasPassword = pwdSetAt !== null || method === "password";
+
   const submitPassword = async (e: FormEvent) => {
     e.preventDefault();
     const sb = getSupabase();
@@ -110,35 +144,21 @@ export default function AccountPage() {
       const { error } = await sb.auth.updateUser({ password: pwd });
       if (error) {
         setPwdMsg({ ok: false, text: error.message });
-      } else {
-        setPwdMsg({ ok: true, text: "密码已设置，下次可用邮箱 + 密码直接登录。" });
-        setPwd("");
-        setPwd2("");
+        return;
       }
+      setPwdSetAt(writePasswordMarker(sync.userId) ?? new Date().toISOString());
+      setMethod("password");
+      setPwd("");
+      setPwd2("");
+      setPwdOpen(false);
+      setPwdMsg({
+        ok: true,
+        text: hasPassword
+          ? "密码已更新，下次可用邮箱 + 密码登录。"
+          : "密码已设置，下次可用邮箱 + 密码登录。",
+      });
     } finally {
       setPwdBusy(false);
-    }
-  };
-
-  const linkGithub = async () => {
-    const sb = getSupabase();
-    if (!sb) return;
-    setLinkMsg(null);
-    setLinkBusy(true);
-    try {
-      const origin = window.location.origin;
-      const { error } = await sb.auth.linkIdentity({
-        provider: "github",
-        options: { redirectTo: `${origin}/login` },
-      });
-      if (error) {
-        setLinkMsg(
-          `绑定失败：${error.message}。可退出后在登录页点击 GitHub 登录，同邮箱会自动关联为同一账号。`
-        );
-      }
-      // 成功时页面会跳转 GitHub 授权，无需就地处理
-    } finally {
-      setLinkBusy(false);
     }
   };
 
@@ -157,7 +177,7 @@ export default function AccountPage() {
           </Button>
           <h1 className="text-lg font-semibold">账号管理</h1>
           <p className="mt-1 text-xs text-muted-foreground">
-            管理登录方式：同一邮箱的密码、邮箱链接、GitHub 归属同一账号。
+            管理登录方式：邮箱链接与邮箱 + 密码归属同一账号。
           </p>
         </div>
 
@@ -169,99 +189,95 @@ export default function AccountPage() {
               <span className="shrink-0 text-muted-foreground">邮箱</span>
               <span className="truncate">{sync.userEmail}</span>
             </div>
-            <div className="flex items-start justify-between gap-2">
-              <span className="shrink-0 text-muted-foreground">登录方式</span>
-              <div className="flex flex-wrap justify-end gap-1.5">
-                {idLoading ? (
-                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                ) : identities.length > 0 ? (
-                  identities.map((p) => (
-                    <Badge key={p} variant="secondary">
-                      {PROVIDER_LABEL[p] ?? p}
-                    </Badge>
-                  ))
-                ) : (
-                  <span className="text-xs text-muted-foreground">加载失败</span>
-                )}
-              </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="shrink-0 text-muted-foreground">本次登录方式</span>
+              <span className="truncate">
+                {methodLoaded ? (method ? METHOD_LABEL[method] ?? method : "—") : "读取中…"}
+              </span>
             </div>
           </div>
         </section>
 
-        {/* 设置 / 修改密码 */}
+        {/* 密码：状态 + 设置/修改 */}
         <section className="rounded-lg border bg-card p-5">
           <h2 className="flex items-center gap-1.5 text-sm font-medium">
             <KeyRound className="h-4 w-4" />
-            设置密码
+            密码
           </h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            设置后可用邮箱 + 密码直接登录；已有密码时此处即为修改密码。
-          </p>
-          <form onSubmit={submitPassword} className="mt-3 space-y-2">
-            <Input
-              type="password"
-              required
-              minLength={6}
-              placeholder="新密码（至少 6 位）"
-              value={pwd}
-              onChange={(e) => setPwd(e.target.value)}
-              aria-label="新密码"
-            />
-            <Input
-              type="password"
-              required
-              minLength={6}
-              placeholder="确认新密码"
-              value={pwd2}
-              onChange={(e) => setPwd2(e.target.value)}
-              aria-label="确认新密码"
-            />
-            {pwdMsg && (
-              <p
-                className={
-                  pwdMsg.ok
-                    ? "text-xs text-green-600 dark:text-green-400"
-                    : "text-xs text-destructive"
-                }
-              >
-                {pwdMsg.text}
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              {hasPassword ? (
+                <span className="inline-flex items-center gap-1.5 text-sm text-green-600 dark:text-green-400">
+                  <Check className="h-4 w-4" />
+                  已设置
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 text-sm text-muted-foreground">
+                  <ShieldOff className="h-4 w-4" />
+                  未设置
+                </span>
+              )}
+              <p className="mt-1 text-xs text-muted-foreground">
+                {hasPassword
+                  ? "可用邮箱 + 密码直接登录，无需等邮件。"
+                  : "当前只能用邮箱链接登录；设置密码后可用邮箱 + 密码登录。"}
               </p>
-            )}
-            <Button type="submit" className="w-full" disabled={pwdBusy}>
-              {pwdBusy ? "处理中…" : "保存密码"}
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              onClick={() => {
+                setPwdMsg(null);
+                setPwdOpen((open) => !open);
+              }}
+            >
+              {pwdOpen ? "收起" : hasPassword ? "修改密码" : "设置密码"}
             </Button>
-          </form>
-        </section>
-
-        {/* 绑定 GitHub */}
-        <section className="rounded-lg border bg-card p-5">
-          <h2 className="flex items-center gap-1.5 text-sm font-medium">
-            <Link2 className="h-4 w-4" />
-            绑定 GitHub
-          </h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            绑定后可直接用 GitHub 登录本账号（GitHub 邮箱需与账号邮箱一致）。
-          </p>
-          {linkMsg && <p className="mt-2 text-xs text-destructive">{linkMsg}</p>}
-          <div className="mt-3">
-            {identities.includes("github") ? (
-              <span className="inline-flex items-center gap-1.5 text-sm text-green-600 dark:text-green-400">
-                <Check className="h-4 w-4" />
-                已绑定 GitHub
-              </span>
-            ) : (
-              <Button
-                type="button"
-                variant="outline"
-                className="w-full gap-2"
-                disabled={linkBusy}
-                onClick={() => void linkGithub()}
-              >
-                <Github className="h-4 w-4" />
-                {linkBusy ? "跳转中…" : "绑定 GitHub"}
-              </Button>
-            )}
           </div>
+
+          {pwdOpen && (
+            <form onSubmit={submitPassword} className="mt-3 space-y-2">
+              <Input
+                type="password"
+                required
+                minLength={6}
+                placeholder="新密码（至少 6 位）"
+                value={pwd}
+                onChange={(e) => setPwd(e.target.value)}
+                aria-label="新密码"
+              />
+              <Input
+                type="password"
+                required
+                minLength={6}
+                placeholder="确认新密码"
+                value={pwd2}
+                onChange={(e) => setPwd2(e.target.value)}
+                aria-label="确认新密码"
+              />
+              <Button type="submit" className="w-full" disabled={pwdBusy}>
+                {pwdBusy ? "处理中…" : "保存密码"}
+              </Button>
+            </form>
+          )}
+
+          {pwdMsg && (
+            <p
+              className={
+                pwdMsg.ok
+                  ? "mt-2 text-xs text-green-600 dark:text-green-400"
+                  : "mt-2 text-xs text-destructive"
+              }
+            >
+              {pwdMsg.text}
+            </p>
+          )}
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            密码状态按本机记录与本次登录方式判断；在其它设备设过密码时这里可能显示为未设置，
+            点「设置密码」重设即可。
+          </p>
         </section>
       </div>
     </main>

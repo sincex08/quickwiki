@@ -20,7 +20,7 @@ let client: SupabaseClient | null = null;
  * - 移动端浏览器（尤其 iOS Safari）会在后台回收标签页并可能清理
  *   localStorage；恢复时若持有一个已过期的 access token，需要主动
  *   refreshSession() 才能续期，否则会被判定为未登录。
- * - 解析 auth 回调（Magic Link / OAuth）时用 PKCE 流程，比 implicit 更能
+ * - 解析 auth 回调（邮箱登录链接）时用 PKCE 流程，比 implicit 更能
  *   抵御 URL fragment 在移动端被截断/丢失的问题。
  * - storageKey 显式固定，避免不同子域/预览域名共用导致互相覆盖。
  */
@@ -68,5 +68,26 @@ export async function ensureFreshSession(): Promise<boolean> {
   } catch {
     // 网络异常等：保留现有会话，交由后续自动刷新重试
     return false;
+  }
+}
+
+/**
+ * 本次会话是用哪种方式签发的：`password`（邮箱 + 密码）/ `otp`（邮箱链接）。
+ * 只解 JWT 的 `amr` 声明用于展示，不做任何校验，也不参与鉴权。
+ */
+export async function getSessionAuthMethod(): Promise<string | null> {
+  const sb = getSupabase();
+  if (!sb) return null;
+  try {
+    const { data } = await sb.auth.getSession();
+    const payloadPart = data.session?.access_token?.split(".")[1];
+    if (!payloadPart) return null;
+    const json = JSON.parse(
+      atob(payloadPart.replace(/-/g, "+").replace(/_/g, "/"))
+    ) as { amr?: Array<{ method?: unknown }> };
+    const method = Array.isArray(json.amr) ? json.amr[0]?.method : null;
+    return typeof method === "string" ? method : null;
+  } catch {
+    return null;
   }
 }

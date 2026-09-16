@@ -66,7 +66,7 @@ self.addEventListener("fetch", (event) => {
   // 页面导航：网络优先 + 缓存兜底（离线访问已访问过的页面）
   if (request.mode === "navigate") {
     // 登录页与带 auth 回调参数的导航永不缓存：否则会返回旧的登录页外壳，
-    // 或让 Magic Link / OAuth 的 code 参数被缓存页面吞掉，导致会话无法建立。
+    // 或让邮箱登录链接的 code 参数被缓存页面吞掉，导致会话无法建立。
     const isAuthFlow =
       url.pathname.startsWith("/login") ||
       url.pathname.startsWith("/account") ||

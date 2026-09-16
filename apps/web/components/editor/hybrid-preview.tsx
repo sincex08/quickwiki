@@ -65,7 +65,12 @@ export function HybridPreview({
   const cancel = () => setEditingIndex(null);
 
   return (
-    <div className={cn("md-preview h-full overflow-y-auto px-4 py-3", className)}>
+    <div
+      className={cn(
+        "md-preview h-full overflow-y-auto px-4 py-3 md:px-6 lg:px-8",
+        className
+      )}
+    >
       {blocks.length === 0 && (
         <p className="text-sm text-muted-foreground">
           空笔记。切换到「编辑」模式开始写作。

@@ -30,7 +30,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { MiniSwitch } from "@/components/common/mini-switch";
-import { LazyEditor } from "@/components/editor/lazy-editor";
+import { LazyEditor, prefetchEditor } from "@/components/editor/lazy-editor";
 import { MarkdownSource } from "@/components/editor/markdown-source";
 import { HybridPreview } from "@/components/editor/hybrid-preview";
 import { TagEditor } from "@/components/notes/tag-editor";
@@ -41,6 +41,12 @@ import { useUIStore, type EditorMode } from "@/stores/use-ui-store";
 import { noteRepo } from "@/lib/data/repository";
 import { releaseAllObjectUrls } from "@/lib/attachments/resolve";
 import { cn, debounce, extractTitle } from "@/lib/utils";
+
+/**
+ * 编辑区统一水平内边距：头部 / 标题 / 标签 / 正文共用同一条左边缘。
+ * 之前正文只有 px-1、标题行 px-3，正文看起来贴边且与标题不对齐。
+ */
+const PANE_PX = "px-4 md:px-6 lg:px-8";
 
 export function EditorPane() {
   const activeNoteId = useUIStore((s) => s.activeNoteId);
@@ -73,6 +79,11 @@ export function EditorPane() {
   useEffect(() => {
     setTagsOpen(false);
   }, [activeNoteId]);
+
+  // 空闲时预热编辑器 chunk：让本次会话首次打开笔记不必等 chunk 下载
+  useEffect(() => {
+    prefetchEditor();
+  }, []);
 
   const pendingRef = useRef<{ id: string; content: string } | null>(null);
   /**
@@ -249,7 +260,7 @@ export function EditorPane() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* 编辑器头部：移动端仅保留「返回 + 状态 + 主操作」，其余收进「…」菜单 */}
-      <div className="flex shrink-0 items-center gap-1.5 border-b px-3 py-2 md:gap-2">
+      <div className={cn("flex shrink-0 items-center gap-1.5 border-b py-2 md:gap-2", PANE_PX)}>
         <Button
           variant="ghost"
           size="icon"
@@ -460,7 +471,7 @@ export function EditorPane() {
       </div>
 
       {/* 标题行：可编辑；留空回退自动提取 */}
-      <div className="flex shrink-0 items-center gap-2 border-b px-3 py-1.5">
+      <div className={cn("flex shrink-0 items-center gap-2 border-b py-1.5", PANE_PX)}>
         <input
           value={titleDraft}
           onChange={(e) => handleTitleChange(e.target.value)}
@@ -490,7 +501,7 @@ export function EditorPane() {
 
       {/* 标签：无标签时折叠为入口按钮，避免常驻空行占位 */}
       {note.tags.length > 0 || tagsOpen ? (
-        <div className="flex shrink-0 items-center border-b px-3 py-1.5">
+        <div className={cn("flex shrink-0 items-center border-b py-1.5", PANE_PX)}>
           <TagEditor
             tags={note.tags}
             onChange={(tags) => void noteRepo.update(note.id, { tags })}
@@ -498,7 +509,7 @@ export function EditorPane() {
           />
         </div>
       ) : (
-        <div className="flex shrink-0 items-center border-b px-3 py-1">
+        <div className={cn("flex shrink-0 items-center border-b py-1", PANE_PX)}>
           <button
             type="button"
             onClick={() => setTagsOpen(true)}

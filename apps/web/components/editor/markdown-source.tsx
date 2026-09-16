@@ -45,7 +45,7 @@ export function MarkdownSource({
       aria-label="Markdown 源码"
       placeholder="直接书写 Markdown…"
       className={cn(
-        "h-full w-full resize-none bg-background p-4 font-mono text-sm leading-relaxed outline-none placeholder:text-muted-foreground",
+        "h-full w-full resize-none bg-background p-4 font-mono text-sm leading-relaxed outline-none placeholder:text-muted-foreground md:px-6 lg:px-8",
         className
       )}
     />
