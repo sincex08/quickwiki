@@ -3,6 +3,7 @@ import type { Note, SearchResult } from "@quickwiki/shared";
 import { SEARCH_SYNC_KEY } from "@quickwiki/shared";
 import { db } from "@/lib/db";
 import { subscribe } from "@/lib/events";
+import { makeSnippet } from "@/lib/search/snippet";
 import { markdownToText, debounce } from "@/lib/utils";
 
 /**
@@ -240,11 +241,8 @@ class SearchManager {
       notes.filter((n): n is Note => Boolean(n)).map((n) => [n.id, n])
     );
 
-    const queryTokens = tokenize(trimmed);
-
     // 去重兜底：同一笔记即使被重复索引也只返回一条
     const seen = new Set<string>();
-
     return hits
       .filter((h) => noteMap.has(h.id as string))
       .filter((h) => {
@@ -259,32 +257,11 @@ class SearchManager {
         return {
           id: note.id,
           title: note.title,
-          snippet: makeSnippet(markdownToText(note.content), queryTokens),
+          snippet: makeSnippet(markdownToText(note.content), trimmed),
           score: h.score,
         };
       });
   }
-}
-
-/** 生成命中摘要：优先展示首个命中位置前后各 40 字符 */
-function makeSnippet(text: string, queryTokens: string[]): string | undefined {
-  if (!text) return undefined;
-  const lower = text.toLowerCase();
-  let hitPos = -1;
-  for (const token of queryTokens) {
-    const pos = lower.indexOf(token);
-    if (pos >= 0 && (hitPos === -1 || pos < hitPos)) {
-      hitPos = pos;
-    }
-  }
-  if (hitPos === -1) {
-    return text.length > 80 ? `${text.slice(0, 80)}…` : text;
-  }
-  const start = Math.max(0, hitPos - 40);
-  const end = Math.min(text.length, hitPos + 40);
-  const prefix = start > 0 ? "…" : "";
-  const suffix = end < text.length ? "…" : "";
-  return `${prefix}${text.slice(start, end)}${suffix}`;
 }
 
 /** 懒加载单例：仅在浏览器端创建 */

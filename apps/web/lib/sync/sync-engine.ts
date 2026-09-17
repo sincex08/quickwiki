@@ -13,6 +13,7 @@ import {
   syncNoteTags,
 } from "@/lib/data/tag-counts";
 import { setBlobMissingHandler } from "@/lib/attachments/resolve";
+import { resolveRemoteSortOrder } from "@/lib/data/note-order";
 import type { Note, Notebook } from "@quickwiki/shared";
 
 /**
@@ -1028,12 +1029,13 @@ async function applyRemoteNote(row: RemoteNote, force = false): Promise<void> {
     const local = await db.notes.get(row.id);
     if (!force) {
       const remoteUpdated = new Date(row.updated_at).getTime();
-      // 本地更新且有待推送修改 → 本地胜出，等 push 处理
-      // （不覆盖本地、不记录远端版本，避免绕过冲突检测）
-      if (local && local.updatedAt > remoteUpdated) {
-        const pending = await db.outbox.get(`note:${row.id}`);
-        if (pending) return;
-      }
+      // 本地有未推送的修改 → 本地胜出，等 push 处理（不覆盖本地、不记录远端版本，
+      // 避免绕过冲突检测）。这里**不额外要求 updatedAt 更新**：排序（sortOrder）
+      // 按约定不刷新时间，若只按时间判定，它会被「push → 回环 pull」当场抹掉。
+      // dead 条目表示推送已放弃，不再压制远端更新。
+      const pending = await db.outbox.get(`note:${row.id}`);
+      if (pending && !pending.dead) return;
+      if (local && local.updatedAt > remoteUpdated) return;
     }
     const nextTags = cleanTags(row.tags);
     const note: Note = {
@@ -1046,8 +1048,8 @@ async function applyRemoteNote(row: RemoteNote, force = false): Promise<void> {
       createdAt: new Date(row.created_at).getTime(),
       updatedAt: new Date(row.updated_at).getTime(),
       pinned: row.pinned,
-      // 服务端缺列（未跑迁移）时为 undefined → 归一为 null，回到默认排序
-      sortOrder: row.sort_order ?? null,
+      // 服务端缺列（undefined）时保留本地顺序；明确返回 null 才代表「没有手动顺序」
+      sortOrder: resolveRemoteSortOrder(row.sort_order, local?.sortOrder),
       syncVersion: row.version,
     };
     await db.transaction("rw", db.notes, db.noteTags, db.tags, async () => {

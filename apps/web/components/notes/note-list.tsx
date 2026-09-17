@@ -25,6 +25,7 @@ interface NoteListProps {
   onMoveNote?: (id: string, direction: -1 | 1) => void;
   onResetOrder?: (notebookId: string | null) => void;
   /** 长按/拖动调整顺序（复用 useNoteDrag 的 state，指示线与侧栏树同一套） */
+  pressedId?: string | null;
   draggingId?: string | null;
   dropTarget?: DropTarget | null;
   onDragStart?: (e: ReactPointerEvent<HTMLElement>, note: Note) => void;
@@ -42,6 +43,7 @@ export function NoteList({
   sortable = false,
   onMoveNote,
   onResetOrder,
+  pressedId = null,
   draggingId = null,
   dropTarget = null,
   onDragStart,
@@ -71,7 +73,7 @@ export function NoteList({
     return () => observer.disconnect();
   }, [hasMore, onLoadMore]);
 
-  // 拖动落点指示线：只在单容器视图里画（混合的「全部笔记」不提供顺序调整）
+  // 拖动落点指示线：单容器视图才画（搜索结果没有「容器内第 n 位」的概念）
   const containerKey = notes[0]?.notebookId ?? "";
   const dropIndex =
     sortable && dropTarget?.containerKey === containerKey ? dropTarget.index : -1;
@@ -101,6 +103,7 @@ export function NoteList({
             onResetOrder={() => onResetOrder?.(note.notebookId ?? null)}
             dragIndex={index}
             dragging={draggingId === note.id}
+            pressed={pressedId === note.id}
             onDragStart={sortable ? (e) => onDragStart?.(e, note) : undefined}
           />
         </Fragment>

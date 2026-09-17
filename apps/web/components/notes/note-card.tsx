@@ -32,9 +32,10 @@ interface NoteCardProps {
   onMoveUp?: () => void;
   onMoveDown?: () => void;
   onResetOrder?: () => void;
-  /** 长按拖动（手机主列表）：下标用于落点换算，dragging 时卡片半透明且让位给拖拽 */
+  /** 长按拖动（手机主列表）：下标用于落点换算；pressed = 已按下待激活，dragging = 拿起中 */
   dragIndex?: number;
   dragging?: boolean;
+  pressed?: boolean;
   onDragStart?: (e: ReactPointerEvent<HTMLElement>) => void;
 }
 
@@ -57,6 +58,7 @@ export function NoteCard({
   onResetOrder,
   dragIndex = 0,
   dragging = false,
+  pressed = false,
   onDragStart,
 }: NoteCardProps) {
   const [offset, setOffset] = useState(0);
@@ -153,7 +155,9 @@ export function NoteCard({
           "group relative cursor-pointer select-none rounded-lg border bg-card p-3 text-left transition-[transform,border-color,box-shadow] hover:border-primary/40 [-webkit-touch-callout:none]",
           compact && "px-3 py-2",
           active && "border-primary ring-1 ring-primary/30",
-          dragging && "opacity-40"
+          // 按下待激活：先给按压反馈（长按到点后会切成下面的「拿起」样式）
+          pressed && !dragging && "border-primary/50 bg-accent/60",
+          dragging && "border-primary opacity-70 shadow-lg ring-2 ring-primary/50"
         )}
         style={{
           transform: `translateX(${offset}px)`,

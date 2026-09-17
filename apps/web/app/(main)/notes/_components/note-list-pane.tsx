@@ -10,7 +10,6 @@ import { NoteList } from "@/components/notes/note-list";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { useNoteDrag } from "@/components/layout/use-note-drag";
 import { useNotebooks, useNotes } from "@/hooks/use-data";
-import { useSearchResults } from "@/hooks/use-search";
 import { useNoteActions } from "@/hooks/use-note-actions";
 import { useUIStore } from "@/stores/use-ui-store";
 import { cn } from "@/lib/utils";
@@ -40,7 +39,7 @@ function TitleOnlyToggle() {
 
 /** 当前过滤条件展示。
  *  笔记本为当前「位置」而非临时筛选：以醒目标题呈现，
- *  不可在此清除/编辑，切换与返回全部笔记一律走左栏；
+ *  不可在此清除/编辑，切换位置一律走左栏；
  *  标签是叠加的临时筛选，保留 chip + 可清除。 */
 function FilterChips() {
   const notebookFilter = useUIStore((s) => s.notebookFilter);
@@ -86,7 +85,6 @@ function FilterChips() {
 }
 
 export function NoteListPane() {
-  const searchQuery = useUIStore((s) => s.searchQuery);
   const notebookFilter = useUIStore((s) => s.notebookFilter);
   const tagFilter = useUIStore((s) => s.tagFilter);
   const activeNoteId = useUIStore((s) => s.activeNoteId);
@@ -101,7 +99,7 @@ export function NoteListPane() {
     resetOrder,
   } = useNoteActions();
   // 手机主列表的长按拖动：与侧栏树共用同一套拖拽逻辑（落点/指示线都靠同一份 state）
-  const { draggingId, dropTarget, startDrag } = useNoteDrag(
+  const { draggingId, pressedId, dropTarget, startDrag } = useNoteDrag(
     (id, notebookId, index) => void moveNoteToPosition(id, notebookId, index)
   );
 
@@ -110,17 +108,11 @@ export function NoteListPane() {
     tag: tagFilter,
   });
 
-  // ===== 搜索模式（共享 hook：桌面侧栏树同源） =====
-  const { results: searchResults, searching } = useSearchResults(searchQuery);
-
-  const isSearching = searchQuery.trim().length > 0;
-  const notes = isSearching ? searchResults ?? [] : items;
-  const listLoading = isSearching ? searching : loading;
+  // ===== 搜索已移出列表栏 =====
+  // 搜索改为顶部搜索框的悬浮结果面板（components/search），结果不回写列表。
+  // 因此这里永远是「当前笔记本（或未分类）的单一容器视图」：
+  // 排序、拖拽、分页口径统一，不再有「搜索态下禁用排序」这类分支。
   const titleOnly = useUIStore((s) => s.noteListTitleOnly);
-
-  // 「全部笔记」是跨笔记本的混合列表，没有「容器内第 n 位」的概念，
-  // 因此只在选中具体笔记本 / 未分类时提供顺序调整（与侧栏树一致）
-  const sortable = !isSearching && notebookFilter !== null;
 
   // ===== 删除确认 =====
   const [pendingDelete, setPendingDelete] = useState<Note | null>(null);
@@ -138,13 +130,7 @@ export function NoteListPane() {
 
       {/* 拖动时靠它做靠近边缘自动滚动 */}
       <div className="min-h-0 flex-1 overflow-y-auto" data-note-drag-scroll>
-        {/* 搜索是全局的：结果可能落在当前笔记本/标签过滤之外，明示避免误解 */}
-        {isSearching && !listLoading && notes.length > 0 && (
-          <p className="px-3 pt-3 text-xs text-muted-foreground">
-            找到 {notes.length} 条结果 · 全局搜索，不限当前笔记本 / 标签
-          </p>
-        )}
-        {listLoading ? (
+        {loading ? (
           <div className="space-y-2 p-3">
             {Array.from({ length: 6 }).map((_, i) => (
               <div key={i} className="rounded-lg border p-3">
@@ -154,31 +140,25 @@ export function NoteListPane() {
               </div>
             ))}
           </div>
-        ) : notes.length === 0 ? (
-          isSearching ? (
-            <EmptyState
-              title="未找到匹配的笔记"
-              description={`没有与「${searchQuery.trim()}」相关的内容`}
-            />
-          ) : (
-            <EmptyState
-              title="还没有笔记"
-              description="记录你的第一个想法，支持 Markdown 快捷输入"
-              actionLabel="新建笔记"
-              onAction={() => void createNote()}
-            />
-          )
+        ) : items.length === 0 ? (
+          <EmptyState
+            title="还没有笔记"
+            description="记录你的第一个想法，支持 Markdown 快捷输入"
+            actionLabel="新建笔记"
+            onAction={() => void createNote()}
+          />
         ) : (
           <NoteList
-            notes={notes}
-            hasMore={!isSearching && hasMore}
+            notes={items}
+            hasMore={hasMore}
             onLoadMore={loadMore}
             activeNoteId={activeNoteId}
             compact={titleOnly}
             onSelect={(id) => openNote(id)}
             onTogglePin={togglePin}
             onRequestDelete={setPendingDelete}
-            sortable={sortable}
+            sortable
+            pressedId={pressedId}
             draggingId={draggingId}
             dropTarget={dropTarget}
             onDragStart={startDrag}
@@ -188,8 +168,8 @@ export function NoteListPane() {
         )}
       </div>
 
-      {/* 列表底部统计（非搜索模式）+ 仅标题切换 */}
-      {!isSearching && total > 0 && (
+      {/* 列表底部统计 + 仅标题切换 */}
+      {total > 0 && (
         <div className="flex items-center justify-between border-t px-3 py-1.5 text-xs text-muted-foreground">
           <span>共 {total} 篇笔记</span>
           <TitleOnlyToggle />

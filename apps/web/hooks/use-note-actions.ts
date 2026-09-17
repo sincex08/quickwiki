@@ -7,7 +7,7 @@ import { attachmentRepo } from "@/lib/data/attachment-repository";
 import type { AttachmentRecord } from "@/lib/db";
 import { useToastStore } from "@/stores/use-toast-store";
 import { useUIStore } from "@/stores/use-ui-store";
-import type { Note } from "@quickwiki/shared";
+import type { Note, NotebookFilter } from "@quickwiki/shared";
 
 /**
  * 删除笔记并开启撤销窗口：删除前缓存笔记与附件（含 blob），
@@ -19,6 +19,29 @@ async function undoDelete(note: Note, attachments: AttachmentRecord[]) {
   await attachmentRepo.restore(attachments);
 }
 
+/**
+ * 新建笔记的归属：显式参数 > 当前打开笔记所属笔记本 > 侧栏选中的笔记本 > 未分类。
+ *
+ * 为什么让「打开的笔记」优先：顶部「新建笔记」是最常用入口，而侧栏的选中态
+ * 往往还是「上次点开的那个笔记本」，与正在写的内容无关 —— 按它落位就会出现
+ * 「正文是 A 的、新建却进了 B」。要明确建到某个笔记本，走侧栏该笔记本行上的
+ * 「新建笔记」（显式参数），或建完在编辑区头部的「移动到笔记本」里改。
+ */
+async function resolveTargetNotebook(
+  options: { notebookId?: string | null } | undefined,
+  activeNoteId: string | null,
+  notebookFilter: NotebookFilter | null
+): Promise<string | null> {
+  if (options && options.notebookId !== undefined) return options.notebookId;
+  if (activeNoteId) {
+    const active = await noteRepo.findById(activeNoteId);
+    if (active) return active.notebookId ?? null;
+  }
+  // "none" 是「未分类」这一筛选条件而非真实笔记本 id
+  if (notebookFilter && notebookFilter !== "none") return notebookFilter;
+  return null;
+}
+
 /** 笔记动作：创建后跳转、删除后清理选中态 */
 export function useNoteActions() {
   const router = useRouter();
@@ -28,15 +51,11 @@ export function useNoteActions() {
 
   const createNote = useCallback(
     async (options?: { notebookId?: string | null }) => {
-      // 显式传参（含 null）以参数为准：侧栏树节点上的「新建笔记」直达目标笔记本。
-      // 未传参时取当前视图过滤；"none" 是「仅未分类」这一过滤条件而非
-      // 笔记本 id，此时新建笔记应为未分类
-      const notebookId =
-        options && options.notebookId !== undefined
-          ? options.notebookId
-          : notebookFilter && notebookFilter !== "none"
-            ? notebookFilter
-            : null;
+      const notebookId = await resolveTargetNotebook(
+        options,
+        activeNoteId,
+        notebookFilter
+      );
       const id = await noteRepo.create({ notebookId });
       openNote(id);
       // 仅从其他页面创建时跳转；已在 /notes 时跳转会堆叠历史记录并与 URL 同步竞争
@@ -48,7 +67,7 @@ export function useNoteActions() {
       }
       return id;
     },
-    [notebookFilter, openNote, router]
+    [activeNoteId, notebookFilter, openNote, router]
   );
 
   const deleteNote = useCallback(

@@ -68,6 +68,8 @@ export function useNoteDrag(
   onDrop: (id: string, notebookId: string | null, index: number) => void
 ) {
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  /** 已按下但还没进入拖动（鼠标等待位移 / 触摸等待长按）——用于给出「按压中」反馈 */
+  const [pressedId, setPressedId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const pendingRef = useRef<Pending | null>(null);
   const activeRef = useRef<Pending | null>(null);
@@ -94,6 +96,7 @@ export function useNoteDrag(
     activeRef.current = null;
     dropRef.current = null;
     setDraggingId(null);
+    setPressedId(null);
     setDropTarget(null);
     document.body.style.userSelect = "";
     document.body.style.cursor = "";
@@ -169,13 +172,15 @@ export function useNoteDrag(
     reset();
     if (!active || !target) return;
     const sameContainer = target.containerKey === active.containerKey;
-    if (sameContainer) {
-      // 同容器内索引换算：移除自身后下标会前移一位
-      const finalIndex =
-        target.index > active.fromIndex ? target.index - 1 : target.index;
-      if (finalIndex === active.fromIndex) return; // 落回原位：不写库
-    }
-    onDropRef.current(active.id, target.notebookId, target.index);
+    // 落点下标统一为「移除自身之后的插入位」——与 repository.moveToPosition 的语义一致。
+    // 同容器内：目标在本行之后时，移除自身会让下标前移一位，必须在这里换算好再传；
+    // 否则拖到非末尾位置会差一位（容器只有 2 篇时恰好被 splice 的 clamp 掩盖，看不出来）。
+    const index =
+      sameContainer && target.index > active.fromIndex
+        ? target.index - 1
+        : target.index;
+    if (sameContainer && index === active.fromIndex) return; // 落回原位：不写库
+    onDropRef.current(active.id, target.notebookId, index);
   }, [reset]);
 
   /** 行 / 卡片上的 pointerdown：记录起点；触摸走长按倒计时 */
@@ -196,6 +201,7 @@ export function useNoteDrag(
       };
       pendingRef.current = pending;
       rowElRef.current = row;
+      setPressedId(note.id);
 
       if (pending.pointerType === "touch" || pending.pointerType === "pen") {
         clearLongPress();
@@ -230,6 +236,7 @@ export function useNoteDrag(
             clearLongPress();
             pendingRef.current = null;
             rowElRef.current = null;
+            setPressedId(null);
           }
           return;
         }
@@ -278,6 +285,7 @@ export function useNoteDrag(
       }
       pendingRef.current = null;
       rowElRef.current = null;
+      setPressedId(null);
     };
 
     const onKey = (e: KeyboardEvent) => {
@@ -301,7 +309,7 @@ export function useNoteDrag(
   // 卸载时别把 body / 行的样式留在拖拽态
   useEffect(() => () => reset(), [reset]);
 
-  return { draggingId, dropTarget, startDrag };
+  return { draggingId, pressedId, dropTarget, startDrag };
 }
 
 /** 生成可拖拽行 / 卡片的数据属性（与 useNoteDrag 的约定配套） */

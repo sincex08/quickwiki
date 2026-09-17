@@ -367,7 +367,7 @@ export function EditorPane() {
             <Button
               variant="ghost"
               size="sm"
-              className="hidden gap-1.5 text-xs md:inline-flex"
+              className="inline-flex gap-1.5 text-xs"
               title="移动到笔记本"
             >
               <BookMarked className="h-3.5 w-3.5" />

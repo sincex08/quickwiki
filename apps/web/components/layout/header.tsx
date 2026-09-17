@@ -11,9 +11,7 @@ import {
   MoreHorizontal,
   Plus,
   RefreshCw,
-  Search,
   Sun,
-  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,6 +23,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { FeaturesDialog } from "@/components/common/features-dialog";
+import { SearchBox } from "@/components/search/search-box";
 import { useTheme } from "@/components/theme-provider";
 import { useUIStore } from "@/stores/use-ui-store";
 import { getSearchManager } from "@/lib/search/search-manager";
@@ -38,60 +37,6 @@ import {
   type SyncState,
 } from "@/lib/sync/sync-engine";
 import { cn } from "@/lib/utils";
-
-/** 搜索输入框（防抖后写入全局搜索状态） */
-function SearchBox() {
-  const searchQuery = useUIStore((s) => s.searchQuery);
-  const setSearchQuery = useUIStore((s) => s.setSearchQuery);
-  const openNote = useUIStore((s) => s.openNote);
-  const [local, setLocal] = useState(searchQuery);
-
-  useEffect(() => {
-    setLocal(searchQuery);
-  }, [searchQuery]);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (local !== searchQuery) {
-        setSearchQuery(local);
-        // 搜索是全局的：笔记本/标签过滤不参与搜索结果，但保持原样以便清空搜索后回到过滤视图
-        if (local && typeof window !== "undefined" && window.innerWidth < 768) {
-          // 移动端列表栏在打开笔记时隐藏，搜索时退回列表以展示结果
-          openNote(null);
-        }
-      }
-    }, 200);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [local]);
-
-  return (
-    <div className="relative w-full min-w-0 max-w-md">
-      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-      <input
-        value={local}
-        onChange={(e) => setLocal(e.target.value)}
-        placeholder="搜索笔记…"
-        aria-label="搜索笔记"
-        className="h-9 w-full min-w-0 rounded-md border border-input bg-background pl-8 pr-8 text-base ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:text-sm"
-      />
-      {local && (
-        <button
-          type="button"
-          aria-label="清除搜索"
-          title="清除搜索"
-          onClick={() => {
-            setLocal("");
-            setSearchQuery("");
-          }}
-          className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:text-foreground"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      )}
-    </div>
-  );
-}
 
 /** 云同步状态芯片：未配置隐藏；未登录显示登录入口；已登录显示同步状态 + 账号菜单 */
 function SyncChip() {

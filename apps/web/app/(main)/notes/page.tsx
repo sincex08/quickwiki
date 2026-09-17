@@ -2,9 +2,11 @@
 
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
+import { useNotebooks } from "@/hooks/use-data";
 import { useUIStore } from "@/stores/use-ui-store";
 import { NoteListPane } from "./_components/note-list-pane";
 import { EditorPane } from "./_components/editor-pane";
+import { EmptyWorkspace } from "./_components/empty-workspace";
 
 /**
  * 深链同步：?note=<id> 与全局选中笔记双向绑定。
@@ -50,6 +52,24 @@ function NoteUrlSync() {
 
 function NotesLayout() {
   const activeNoteId = useUIStore((s) => s.activeNoteId);
+  const notebookFilter = useUIStore((s) => s.notebookFilter);
+  const setNotebookFilter = useUIStore((s) => s.setNotebookFilter);
+  const { notebooks, loading: notebooksLoading } = useNotebooks();
+
+  /**
+   * 记住的位置失效时**清空**（回到「未选择」的默认页），不自动落到第一个笔记本：
+   * 应用允许没有当前位置 —— 没选笔记本也没打开笔记时显示默认页，由用户自己选。
+   */
+  useEffect(() => {
+    if (notebooksLoading) return;
+    if (notebookFilter === null || notebookFilter === "none") return;
+    if (!notebooks.some((nb) => nb.id === notebookFilter)) {
+      setNotebookFilter(null);
+    }
+  }, [notebooksLoading, notebooks, notebookFilter, setNotebookFilter]);
+
+  /** 未选笔记本且未打开笔记 → 默认页（侧栏照常可用） */
+  const showDefaultPage = notebookFilter === null && !activeNoteId;
 
   return (
     <div className="flex h-full min-h-0">
@@ -61,7 +81,7 @@ function NotesLayout() {
           activeNoteId ? "hidden" : "flex"
         )}
       >
-        <NoteListPane />
+        {showDefaultPage ? <EmptyWorkspace /> : <NoteListPane />}
       </div>
 
       {/* 编辑器区：移动端在打开笔记时全屏，桌面端始终显示 */}
@@ -71,7 +91,7 @@ function NotesLayout() {
           activeNoteId ? "flex" : "hidden md:flex"
         )}
       >
-        <EditorPane />
+        {showDefaultPage ? <EmptyWorkspace /> : <EditorPane />}
       </div>
     </div>
   );

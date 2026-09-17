@@ -8,8 +8,8 @@ import type { Note } from "@quickwiki/shared";
  * - 容器内存在任意一条已编号 → 该容器进入「手动顺序」模式，
  *   顺序完全由 `sortOrder` 升序决定（`pinned` 不再影响位置，只作为可见标记）
  *
- * 跨容器的混合视图（「全部笔记」）不存在全局手动顺序：按容器**分块**呈现，
- * 块内遵守各自顺序，块间按块内最近更新时间倒序。
+ * 跨容器的混合视图（历史上的「全部笔记」列表、搜索结果）不存在全局手动顺序：
+ * 按容器**分块**呈现，块内遵守各自顺序，块间按块内最近更新时间倒序。
  */
 
 /** 手动顺序的编号步长（留出插入余量，相邻交换无需整组重写） */
@@ -147,6 +147,22 @@ export function topOrderValue(rows: readonly OrderableRow[]): number {
     .filter((v): v is number => v != null);
   if (values.length === 0) return 0;
   return Math.min(...values) - SORT_ORDER_STEP;
+}
+
+/**
+ * 远端行与本地的手动顺序该取谁。
+ *
+ * 关键区分：`undefined`（服务端没有这个字段 —— 未执行迁移，或旧客户端写入）
+ * **不等于** `null`（服务端明确表示「没有手动顺序」）。
+ * 前者必须保留本地值，否则「本地排序 → push → 回环 pull」会用「无信息」把
+ * 本地刚排好的顺序抹掉（表现为：拖完/上移下移后顺序又自己回去了）。
+ */
+export function resolveRemoteSortOrder(
+  remoteValue: number | null | undefined,
+  localValue: number | null | undefined
+): number | null {
+  if (remoteValue === undefined) return localValue ?? null;
+  return remoteValue ?? null;
 }
 
 /** 从 Note 上取排序所需的字段（避免把正文/标签带进排序逻辑） */

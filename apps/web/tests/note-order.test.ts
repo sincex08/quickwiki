@@ -10,6 +10,7 @@ import {
   isManualOrder,
   moveIdTo,
   numberSequence,
+  resolveRemoteSortOrder,
   sortNotesForDisplay,
   swapAdjacent,
   topOrderValue,
@@ -123,5 +124,23 @@ describe("编号与落点换算", () => {
     expect(topOrderValue([row("a", { sortOrder: 0 }), row("b", { sortOrder: 2048 })])).toBe(
       -SORT_ORDER_STEP
     );
+  });
+});
+
+describe("远端 / 本地的顺序取舍", () => {
+  it("服务端没有该字段（undefined）时保留本地顺序 —— 否则回环 pull 会抹掉刚排好的顺序", () => {
+    expect(resolveRemoteSortOrder(undefined, 2048)).toBe(2048);
+    expect(resolveRemoteSortOrder(undefined, 0)).toBe(0);
+    expect(resolveRemoteSortOrder(undefined, null)).toBeNull();
+    expect(resolveRemoteSortOrder(undefined, undefined)).toBeNull();
+  });
+
+  it("服务端明确返回 null 表示「已重置」，此时清空本地顺序", () => {
+    expect(resolveRemoteSortOrder(null, 2048)).toBeNull();
+  });
+
+  it("服务端有值时以服务端为准", () => {
+    expect(resolveRemoteSortOrder(1024, 2048)).toBe(1024);
+    expect(resolveRemoteSortOrder(0, null)).toBe(0);
   });
 });

@@ -17,6 +17,7 @@ import {
   Book,
   ChevronRight,
   FileText,
+  FolderPlus,
   MoreHorizontal,
   Pencil,
   Pin,
@@ -25,7 +26,7 @@ import {
   Tag as TagIcon,
   Trash2,
 } from "lucide-react";
-import type { Notebook } from "@quickwiki/shared";
+import type { Notebook, NotebookFilter } from "@quickwiki/shared";
 import { NOTEBOOK_COLORS } from "@quickwiki/shared";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -53,12 +54,7 @@ import {
   useNoteDrag,
   type DropTarget,
 } from "@/components/layout/use-note-drag";
-import {
-  useNotebooks,
-  useNotesIndex,
-  useTags,
-} from "@/hooks/use-data";
-import { useSearchResults } from "@/hooks/use-search";
+import { useNotesIndex, useNotebooks, useTags } from "@/hooks/use-data";
 import { useNoteActions } from "@/hooks/use-note-actions";
 import { useUIStore } from "@/stores/use-ui-store";
 import { notebookRepo } from "@/lib/data/repository";
@@ -105,7 +101,9 @@ interface NoteRowActions {
   onMoveNote: (id: string, direction: -1 | 1) => void;
   /** 恢复该容器的默认顺序（置顶 + 更新时间倒序） */
   onResetOrder: (notebookId: string | null) => void;
-  /** 拖拽：正在被拖的笔记 id 与当前落点（用于半透明与插入指示线） */
+  /** 已按下、等待进入拖动的笔记（按压反馈） */
+  pressedId: string | null;
+  /** 正在被拖的笔记 id 与当前落点（用于「拿起」样式与插入指示线） */
   draggingId: string | null;
   dropTarget: DropTarget | null;
   onDragStart: (
@@ -149,6 +147,7 @@ function NoteRow({
 }) {
   const active = note.id === actions.activeNoteId;
   const dragging = actions.draggingId === note.id;
+  const pressed = actions.pressedId === note.id;
   return (
     <div
       {...(sortable ? noteRowDragProps(note, index) : {})}
@@ -156,7 +155,11 @@ function NoteRow({
       className={cn(
         "group relative flex w-full items-center rounded-md pr-1.5 text-sm transition-colors hover:bg-accent [-webkit-touch-callout:none]",
         active && "bg-accent text-accent-foreground",
-        dragging && "opacity-40"
+        // 已按下（鼠标等位移 / 触摸等长按）：先给一层按压反馈，
+        // 让人知道「按住生效了」，不用猜什么时候可以拖
+        pressed && !dragging && "bg-accent/70 ring-1 ring-primary/30",
+        // 拿起中：明显区别于按住态，配合插入指示线表示「现在松手即落位」
+        dragging && "bg-accent opacity-70 shadow-md ring-2 ring-primary/50"
       )}
       style={{ paddingLeft: indentOf(depth) }}
     >
@@ -244,15 +247,12 @@ function TreeNoteRows({
   notes,
   depth,
   notebookId,
-  mixed = false,
   actions,
 }: {
   notes: NoteIndexItem[];
   depth: number;
   /** 该块所属容器（null = 未分类）：落点匹配与手动顺序判定都依赖它 */
   notebookId: string | null;
-  /** 混合视图（跨容器的「全部笔记」列表）：关闭全部顺序调整入口 */
-  mixed?: boolean;
   actions: NoteRowActions;
 }) {
   const [limit, setLimit] = useState(TREE_PAGE_SIZE);
@@ -283,12 +283,11 @@ function TreeNoteRows({
     return () => observer.disconnect();
   }, [hasMore]);
 
-  // 该容器已手动排序过 → 菜单里出现「恢复默认顺序」（混合视图不提供）
-  const sortable = !mixed;
-  const manualOrder = sortable && notes.some((n) => n.sortOrder != null);
+  // 该容器已手动排序过 → 菜单里出现「恢复默认顺序」
+  const manualOrder = notes.some((n) => n.sortOrder != null);
   const containerKey = notebookId ?? "";
   const dropIndex =
-    sortable && actions.dropTarget?.containerKey === containerKey
+    actions.dropTarget?.containerKey === containerKey
       ? actions.dropTarget.index
       : -1;
 
@@ -325,10 +324,9 @@ function TreeNoteRows({
             note={n}
             depth={depth + 1}
             index={i}
-            canMoveUp={sortable && i > 0}
-            canMoveDown={sortable && i < notes.length - 1}
+            canMoveUp={i > 0}
+            canMoveDown={i < notes.length - 1}
             manualOrder={manualOrder}
-            sortable={sortable}
             actions={actions}
           />
         </Fragment>
@@ -348,6 +346,8 @@ interface TreeBundle {
   onToggle: (id: string) => void;
   onSelect: (id: string) => void;
   onCreateNote: (id: string) => void;
+  /** 在该笔记本下新建子笔记本（当作文件夹分组） */
+  onCreateChild: (id: string) => void;
   onRename: (id: string) => void;
   onRequestDelete: (id: string) => void;
   actions: NoteRowActions;
@@ -371,6 +371,7 @@ function NotebookNode({
     onToggle,
     onSelect,
     onCreateNote,
+    onCreateChild,
     onRename,
     onRequestDelete,
     actions,
@@ -415,7 +416,8 @@ function NotebookNode({
         <button
           type="button"
           onClick={() => {
-            if (hasChildren) onToggle(notebook.id);
+            // 已选中时再点 = 取消选中（不改展开态，避免「收起来了 + 内容也没了」的混乱）
+            if (!selected && hasChildren) onToggle(notebook.id);
             onSelect(notebook.id);
           }}
           className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden py-1.5 text-left"
@@ -448,6 +450,10 @@ function NotebookNode({
             <DropdownMenuItem onClick={() => onCreateNote(notebook.id)}>
               <Plus className="mr-2 h-4 w-4" />
               新建笔记
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onCreateChild(notebook.id)}>
+              <FolderPlus className="mr-2 h-4 w-4" />
+              新建子笔记本
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => onRename(notebook.id)}>
               <Pencil className="mr-2 h-4 w-4" />
@@ -512,7 +518,6 @@ export function SidebarContent() {
   const { notebooks } = useNotebooks();
   const { tags } = useTags();
   const { items: noteIndex, loading: indexLoading } = useNotesIndex();
-  const searchQuery = useUIStore((s) => s.searchQuery);
   const notebookFilter = useUIStore((s) => s.notebookFilter);
   const tagFilter = useUIStore((s) => s.tagFilter);
   const setNotebookFilter = useUIStore((s) => s.setNotebookFilter);
@@ -520,9 +525,7 @@ export function SidebarContent() {
   const setSidebarOpen = useUIStore((s) => s.setSidebarOpen);
   const openNote = useUIStore((s) => s.openNote);
   const activeNoteId = useUIStore((s) => s.activeNoteId);
-  const treeExpandedAll = useUIStore((s) => s.treeExpandedAll);
   const treeExpandedIds = useUIStore((s) => s.treeExpandedIds);
-  const toggleTreeExpandedAll = useUIStore((s) => s.toggleTreeExpandedAll);
   const toggleTreeExpandedId = useUIStore((s) => s.toggleTreeExpandedId);
 
   const {
@@ -534,14 +537,14 @@ export function SidebarContent() {
     resetOrder,
   } = useNoteActions();
   // 桌面拖拽：落点提交为「放到目标容器第 n 位」（跨容器即同时改分类）
-  const { draggingId, dropTarget, startDrag } = useNoteDrag(
+  const { draggingId, pressedId, dropTarget, startDrag } = useNoteDrag(
     (id, notebookId, index) => void moveNoteToPosition(id, notebookId, index)
   );
-  const { results: searchResults, searching, isSearching } =
-    useSearchResults(searchQuery);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  /** 新建子笔记本时预设的父级（null = 顶层新建） */
+  const [newChildOf, setNewChildOf] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [pendingDeleteNote, setPendingDeleteNote] =
     useState<NoteIndexItem | null>(null);
@@ -607,9 +610,13 @@ export function SidebarContent() {
     goNotes();
   };
 
-  const selectNotebook = (id: string | null) => {
-    // 选中是单选状态：重复点击已选项不取消，只能通过切换其它项更换
-    setNotebookFilter(id);
+  const selectNotebook = (id: NotebookFilter) => {
+    // 再次点击已选中的项 = 取消选中，回到「未选择」的默认页
+    // （应用允许没有当前位置，不强制停在某个笔记本下）
+    const next = notebookFilter === id ? null : id;
+    setNotebookFilter(next);
+    // 取消选中时一并收起当前打开的笔记，否则主区仍显示着笔记、默认页并不「空」
+    if (next === null) openNote(null);
     goNotes();
   };
 
@@ -635,6 +642,7 @@ export function SidebarContent() {
     onDeleteNote: setPendingDeleteNote,
     onMoveNote: (id, direction) => void moveNote(id, direction),
     onResetOrder: (notebookId) => void resetOrder(notebookId),
+    pressedId,
     draggingId,
     dropTarget,
     onDragStart: startDrag,
@@ -651,8 +659,15 @@ export function SidebarContent() {
       void createNote({ notebookId: id });
       goNotes();
     },
+    onCreateChild: (id) => {
+      // 以该笔记本为父级打开新建对话框（父级已预填，写个名字即可）
+      setEditingId(null);
+      setNewChildOf(id);
+      setDialogOpen(true);
+    },
     onRename: (id) => {
       setEditingId(id);
+      setNewChildOf(null);
       setDialogOpen(true);
     },
     onRequestDelete: setDeleteId,
@@ -683,6 +698,7 @@ export function SidebarContent() {
           className="mb-4 w-full justify-start gap-2"
           onClick={() => {
             setEditingId(null);
+            setNewChildOf(null);
             setDialogOpen(true);
           }}
         >
@@ -690,191 +706,90 @@ export function SidebarContent() {
           新建笔记本
         </Button>
 
-        {isSearching ? (
-          /* ===== 搜索态：结果替换树区（全局搜索，与过滤器无关） ===== */
-          <div>
-            {searching ? (
-              <div className="space-y-2 p-1">
-                {Array.from({ length: 6 }).map((_, i) => (
-                  <Skeleton key={i} className="h-6 w-full" />
-                ))}
-              </div>
-            ) : (searchResults?.length ?? 0) === 0 ? (
-              <div className="px-2 py-4 text-xs text-muted-foreground">
-                未找到与「{searchQuery.trim()}」相关的笔记
-              </div>
-            ) : (
-              <>
-                <p className="px-2 pb-1 pt-1 text-xs text-muted-foreground">
-                  找到 {searchResults?.length} 条结果 ·
-                  全局搜索，不限当前笔记本 / 标签
-                </p>
-                {/* 搜索结果是 Note（缺索引行的 sortOrder），补齐后再复用行组件 */}
-                {(searchResults ?? []).map((n) => (
-                  <NoteRow
-                    key={n.id}
-                    note={{ ...n, sortOrder: n.sortOrder ?? null }}
-                    depth={0}
-                    sortable={false}
-                    actions={actions}
-                  />
-                ))}
-              </>
-            )}
+        {/* ===== 笔记本树 ===== */}
+        <div className="mt-4">
+          <div className="mb-1 px-2">
+            <span className="text-xs font-medium text-muted-foreground">
+              笔记本
+            </span>
           </div>
-        ) : (
-          <>
-            {/* ===== 全部笔记（可展开列出全部） ===== */}
-            <div
-              className={cn(
-                "group relative flex w-full items-center gap-0.5 rounded-md pr-1.5 text-sm transition-colors hover:bg-accent",
-                notebookFilter === null &&
-                  !tagFilter &&
-                  "bg-accent text-accent-foreground"
-              )}
-              style={{ paddingLeft: indentOf(0) }}
-            >
-              {filteredIndex.length > 0 ? (
-                <button
-                  type="button"
-                  aria-label={treeExpandedAll ? "收起全部笔记" : "展开全部笔记"}
-                  aria-expanded={treeExpandedAll}
-                  onClick={toggleTreeExpandedAll}
-                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded hover:bg-background"
-                >
-                  <ChevronRight
-                    className={cn(
-                      "h-3.5 w-3.5 text-muted-foreground transition-transform",
-                      treeExpandedAll && "rotate-90"
-                    )}
-                  />
-                </button>
-              ) : (
-                <span aria-hidden className="w-5 shrink-0" />
-              )}
+          {indexLoading && (
+            <div className="space-y-2 p-1">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <Skeleton key={i} className="h-6 w-full" />
+              ))}
+            </div>
+          )}
+          {rootNotebooks.length === 0 && !indexLoading && (
+            <div className="px-2 py-1 text-xs text-muted-foreground">
+              暂无笔记本
+            </div>
+          )}
+          {rootNotebooks.map((nb) => (
+            <NotebookNode
+              key={nb.id}
+              notebook={nb}
+              depth={0}
+              bundle={bundle}
+            />
+          ))}
+
+          {/* 未分类：不属于任何笔记本的笔记，同样可展开 */}
+          <div
+            className={cn(
+              "group relative flex w-full items-center gap-0.5 rounded-md pr-1.5 text-sm transition-colors hover:bg-accent",
+              notebookFilter === "none" && "bg-accent text-accent-foreground"
+            )}
+            style={{ paddingLeft: indentOf(0) }}
+            title="不属于任何笔记本的笔记"
+            // 拖笔记到这里 = 移入未分类（置于最前）
+            data-note-drop-container=""
+          >
+            {uncategorizedNotes.length > 0 ? (
               <button
                 type="button"
-                onClick={() => {
-                  if (filteredIndex.length > 0) toggleTreeExpandedAll();
-                  selectNotebook(null);
-                }}
-                className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left"
+                aria-label={expandedSet.has("none") ? "收起未分类" : "展开未分类"}
+                aria-expanded={expandedSet.has("none")}
+                onClick={() => toggleTreeExpandedId("none")}
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded hover:bg-background"
               >
-                <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <span className="truncate">全部笔记</span>
-                {/* 角标与树同源：直接取当前树下可见的条数（标签过滤时随之收窄） */}
-                <span className="ml-auto shrink-0 pl-2 text-xs text-muted-foreground">
-                  {filteredIndex.length}
-                </span>
+                <ChevronRight
+                  className={cn(
+                    "h-3.5 w-3.5 text-muted-foreground transition-transform",
+                    expandedSet.has("none") && "rotate-90"
+                  )}
+                />
               </button>
-              {/* 与笔记本行的操作按钮等宽占位，保证各计数右对齐 */}
-              <span aria-hidden className="w-6 shrink-0" />
-            </div>
-            {treeExpandedAll && (
-              <TreeNoteRows
-                notes={filteredIndex}
-                depth={0}
-                notebookId={null}
-                mixed
-                actions={actions}
-              />
+            ) : (
+              <span aria-hidden className="w-5 shrink-0" />
             )}
-
-            {/* ===== 笔记本树 ===== */}
-            <div className="mt-4">
-              <div className="mb-1 flex items-center justify-between px-2">
-                <span className="text-xs font-medium text-muted-foreground">
-                  笔记本
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSidebarOpen(false);
-                    router.push("/notebooks");
-                  }}
-                  className="text-xs text-muted-foreground transition-colors hover:text-foreground"
-                >
-                  管理
-                </button>
-              </div>
-              {indexLoading && (
-                <div className="space-y-2 p-1">
-                  {Array.from({ length: 3 }).map((_, i) => (
-                    <Skeleton key={i} className="h-6 w-full" />
-                  ))}
-                </div>
-              )}
-              {rootNotebooks.length === 0 && !indexLoading && (
-                <div className="px-2 py-1 text-xs text-muted-foreground">
-                  暂无笔记本
-                </div>
-              )}
-              {rootNotebooks.map((nb) => (
-                <NotebookNode
-                  key={nb.id}
-                  notebook={nb}
-                  depth={0}
-                  bundle={bundle}
-                />
-              ))}
-
-              {/* 未分类：不属于任何笔记本的笔记，同样可展开 */}
-              <div
-                className={cn(
-                  "group relative flex w-full items-center gap-0.5 rounded-md pr-1.5 text-sm transition-colors hover:bg-accent",
-                  notebookFilter === "none" && "bg-accent text-accent-foreground"
-                )}
-                style={{ paddingLeft: indentOf(0) }}
-                title="不属于任何笔记本的笔记"
-                // 拖笔记到这里 = 移入未分类（置于最前）
-                data-note-drop-container=""
-              >
-                {uncategorizedNotes.length > 0 ? (
-                  <button
-                    type="button"
-                    aria-label={expandedSet.has("none") ? "收起未分类" : "展开未分类"}
-                    aria-expanded={expandedSet.has("none")}
-                    onClick={() => toggleTreeExpandedId("none")}
-                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded hover:bg-background"
-                  >
-                    <ChevronRight
-                      className={cn(
-                        "h-3.5 w-3.5 text-muted-foreground transition-transform",
-                        expandedSet.has("none") && "rotate-90"
-                      )}
-                    />
-                  </button>
-                ) : (
-                  <span aria-hidden className="w-5 shrink-0" />
-                )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (uncategorizedNotes.length > 0)
-                      toggleTreeExpandedId("none");
-                    selectNotebook("none");
-                  }}
-                  className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left"
-                >
-                  <span className="h-2.5 w-2.5 shrink-0 rounded-full border border-dashed border-muted-foreground" />
-                  <span className="truncate">未分类</span>
-                  <span className="ml-auto shrink-0 pl-2 text-xs text-muted-foreground">
-                    {uncategorizedNotes.length}
-                  </span>
-                </button>
-                <span aria-hidden className="w-6 shrink-0" />
-              </div>
-              {expandedSet.has("none") && (
-                <TreeNoteRows
-                  notes={uncategorizedNotes}
-                  depth={0}
-                  notebookId={null}
-                  actions={actions}
-                />
-              )}
-            </div>
-          </>
-        )}
+            <button
+              type="button"
+              onClick={() => {
+                // 已选中时再点 = 取消选中（不改展开态）
+                if (notebookFilter !== "none" && uncategorizedNotes.length > 0)
+                  toggleTreeExpandedId("none");
+                selectNotebook("none");
+              }}
+              className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left"
+            >
+              <span className="h-2.5 w-2.5 shrink-0 rounded-full border border-dashed border-muted-foreground" />
+              <span className="truncate">未分类</span>
+              <span className="ml-auto shrink-0 pl-2 text-xs text-muted-foreground">
+                {uncategorizedNotes.length}
+              </span>
+            </button>
+            <span aria-hidden className="w-6 shrink-0" />
+          </div>
+          {expandedSet.has("none") && (
+            <TreeNoteRows
+              notes={uncategorizedNotes}
+              depth={0}
+              notebookId={null}
+              actions={actions}
+            />
+          )}
+        </div>
 
         {/* 标签 */}
         {tags.length > 0 && (
@@ -921,7 +836,7 @@ export function SidebarContent() {
         initialParentId={
           editingId
             ? notebooks.find((n) => n.id === editingId)?.parentId ?? null
-            : null
+            : newChildOf
         }
       />
 
@@ -942,7 +857,7 @@ export function SidebarContent() {
           <AlertDialogHeader>
             <AlertDialogTitle>删除笔记本？</AlertDialogTitle>
             <AlertDialogDescription>
-              笔记本将被删除，其中的笔记会保留并移动到「全部笔记」。此操作无法撤销。
+              笔记本将被删除，其中的笔记会保留并移到「未分类」。此操作无法撤销。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
