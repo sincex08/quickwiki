@@ -187,15 +187,17 @@ Repository 抽象与本地 outbox 机制可复用。
 - **为什么不兼容旧 HTML 数据**：应用未上线，历史数据仅为开发测试数据，DB v2 升级时一次性清空，换取更简单的纯 Markdown 代码路径
 - **为什么正文以 `quickwiki-att://` 引用附件、而不是把图片转成公开 URL 写回正文**：两端存同一份协议串，push/pull 零改写，本地与服务端内容完全一致；旧方案（本地 base64 + 服务端副本改写 URL + `sync.imgmap` 映射）是双副本补丁，复杂度高且第二台设备离线不可看。代价是 markdown 离开本应用不能直接渲染，由导出负责落地为文件。存量数据不迁移（应用未上线，历史数据均为测试数据），旧管线代码已整体删除（`uploadEmbeddedImages` / `sync.imgmap` / djb2 `hashString` 命名），渲染层对 `data:` / 外链仍原样透传以兜住残留数据
 
-## 公网部署（Vercel · 验证路线）
+## 公网部署（Cloudflare Pages）
 
 1. GitHub 建空仓库 → 推送本仓库（首次 commit 后）
-2. Vercel「Import Project」选该仓库：Root Directory 填 `apps/web`，框架自动识别，构建命令默认 `next build`
-3. Vercel 项目 Settings → Environment Variables 添加（构建时内联，必须）：
+2. Cloudflare Dashboard → Workers & Pages → Create → Pages → Connect to Git 选该仓库：
+   - Root directory 填 `apps/web`（或构建命令写 `cd apps/web && pnpm install --frozen-lockfile && pnpm build`）
+   - Build output directory 填 `apps/web/out`（静态导出产物）
+3. Pages 项目 Settings → Environment variables 添加（构建时内联，必须）：
    - `NEXT_PUBLIC_SUPABASE_URL`
    - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-4. Supabase 控制台 Auth → URL Configuration：Site URL 改为 Vercel 分配的公网地址，Redirect URLs 追加该地址（邮箱登录链接回跳需要）
-5. 访问 Vercel 域名验证登录与同步
+4. Supabase 控制台 Auth → URL Configuration：Site URL 改为 Pages 分配的 `*.pages.dev` 公网地址，Redirect URLs 追加该地址（邮箱登录链接回跳需要）
+5. 访问 Pages 域名验证登录与同步；推送到 main 自动触发重新部署
 
 注意：anon 公钥本就是公开值（数据安全靠 RLS），仅 service role key 不可外泄；
-`*.vercel.app` 在大陆访问不稳定，正式使用建议绑定自定义域名（Vercel 内配置 + DNS CNAME）。
+正式使用建议绑定自定义域名（Pages 项目 Custom domains + DNS）。
