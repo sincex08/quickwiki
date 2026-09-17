@@ -8,6 +8,7 @@ import {
   joinMarkdownBlocks,
 } from "@/lib/markdown-blocks";
 import { MarkdownImg } from "./markdown-img";
+import { noteUrlTransform } from "./url-transform";
 import { cn } from "@/lib/utils";
 
 /** 协议引用 / 外链 / 存量 data URL 统一解析渲染 */
@@ -112,13 +113,21 @@ export function HybridPreview({
             }}
             className="-mx-2 cursor-text rounded-md px-2 transition-colors hover:bg-accent/40 focus:bg-accent/40 focus:outline-none"
           >
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              urlTransform={noteUrlTransform}
+              components={markdownComponents}
+            >
               {source}
             </ReactMarkdown>
           </div>
         ) : (
           <div key={i} className="-mx-2 px-2">
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              urlTransform={noteUrlTransform}
+              components={markdownComponents}
+            >
               {source}
             </ReactMarkdown>
           </div>

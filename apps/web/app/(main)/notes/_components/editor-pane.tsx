@@ -38,6 +38,7 @@ import { AttachmentDrawer } from "@/components/attachments/attachment-drawer";
 import { useNote, useNotebooks } from "@/hooks/use-data";
 import { useNoteActions } from "@/hooks/use-note-actions";
 import { useUIStore, type EditorMode } from "@/stores/use-ui-store";
+import { useToastStore } from "@/stores/use-toast-store";
 import { noteRepo } from "@/lib/data/repository";
 import { releaseAllObjectUrls } from "@/lib/attachments/resolve";
 import { cn, debounce, extractTitle } from "@/lib/utils";
@@ -63,6 +64,9 @@ export function EditorPane() {
   const sourceNonce = useUIStore((s) => s.sourceNonce);
   const bumpSourceNonce = useUIStore((s) => s.bumpSourceNonce);
 
+  /** 当前打开的笔记 id 快照：防抖回调执行时校验目标，防止切换后迟到的回调串写 */
+  const activeNoteIdRef = useRef<string | null>(activeNoteId);
+
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
   const [confirmOpen, setConfirmOpen] = useState(false);
   /** 标签区展开态：无标签时折叠为入口按钮，展开（或已有标签）才渲染编辑行 */
@@ -75,8 +79,9 @@ export function EditorPane() {
     return () => clearTimeout(timer);
   }, [saveState]);
 
-  // 切换笔记时收起标签编辑区
+  // 切换笔记时收起标签编辑区，并同步当前打开的笔记 id（防抖回调据此校验目标）
   useEffect(() => {
+    activeNoteIdRef.current = activeNoteId;
     setTagsOpen(false);
   }, [activeNoteId]);
 
@@ -104,13 +109,19 @@ export function EditorPane() {
     if (pendingRef.current) {
       const { id, content } = pendingRef.current;
       pendingRef.current = null;
-      void noteRepo.update(id, { content, title: computeTitle(content) });
+      noteRepo
+        .update(id, { content, title: computeTitle(content) })
+        .catch(() => {
+          useToastStore.getState().show("保存失败");
+        });
     }
   };
 
   const debouncedSave = useMemo(
     () =>
       debounce((id: string, content: string) => {
+        // 防串写：回调携带发起时的 id，若已不是当前打开的笔记则丢弃
+        if (id !== activeNoteIdRef.current) return;
         noteRepo
           .update(id, { content, title: computeTitle(content) })
           .then(() => {
@@ -123,17 +134,25 @@ export function EditorPane() {
               pendingRef.current = null;
             }
             setSaveState("saved");
+          })
+          .catch(() => {
+            // 保存失败：提示用户并保持 dirty（pendingRef 不清除），下次编辑自然重试
+            useToastStore.getState().show("保存失败");
+            setSaveState("idle");
           });
       }, AUTOSAVE_DEBOUNCE_MS),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     []
   );
 
-  // 切换笔记或卸载时：立即落盘未保存内容、回到编辑模式、释放附件 objectURL
+  // 切换笔记或卸载时：立即落盘未保存的内容与标题草稿、回到编辑模式、释放附件 objectURL
   useEffect(() => {
     return () => {
       debouncedSave.cancel();
       flushPending();
+      // 标题防抖同样取消并按发起时的 id flush：既不丢失最后一笔，也不等迟到回调
+      debouncedTitleSave.cancel();
+      flushTitlePending();
       setEditorMode("edit");
       releaseAllObjectUrls();
       contentOverrideRef.current = null;
@@ -142,15 +161,19 @@ export function EditorPane() {
   }, [activeNoteId]);
 
   const handleChange = (markdown: string) => {
-    if (!activeNoteId) return;
-    pendingRef.current = { id: activeNoteId, content: markdown };
+    // 写入目标以 note 自身 id 为准，避免 useNote 未跟随时用旧 activeNoteId 串写
+    const id = note?.id ?? activeNoteId;
+    if (!id) return;
+    pendingRef.current = { id, content: markdown };
     latestContentRef.current = markdown;
     setSaveState("saving");
-    debouncedSave(activeNoteId, markdown);
+    debouncedSave(id, markdown);
   };
 
   // ===== 自定义标题 =====
   const titleManualRef = useRef<string | null>(null);
+  /** 待落盘的标题草稿（发起时的 id + 输入值）：切换/卸载时 flush，防抖失败时保留 */
+  const pendingTitleRef = useRef<{ id: string; value: string } | null>(null);
   const latestContentRef = useRef("");
   const titleFocused = useRef(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -185,46 +208,89 @@ export function EditorPane() {
    * 最后才异步落盘。
    */
   const applyExternalContent = (markdown: string) => {
-    if (!activeNoteId) return;
+    const id = note?.id ?? activeNoteId;
+    if (!id) return;
     debouncedSave.cancel();
     pendingRef.current = null;
     contentOverrideRef.current = markdown;
     bumpSourceNonce();
-    void noteRepo.update(activeNoteId, {
-      content: markdown,
-      title: computeTitle(markdown),
-    });
+    noteRepo
+      .update(id, { content: markdown, title: computeTitle(markdown) })
+      .catch(() => {
+        useToastStore.getState().show("保存失败");
+      });
+  };
+
+  /**
+   * 立即按发起时的 id 落盘标题（防抖回调与切换/卸载 flush 共用）。
+   * 成功后才清除 pendingTitleRef；失败时 toast 提示并保持 dirty，下次编辑自然重试。
+   */
+  const saveTitleNow = (id: string, value: string) => {
+    const manual = value.trim() === "" ? null : value;
+    titleManualRef.current = manual;
+    const title =
+      manual !== null ? manual : extractTitle(latestContentRef.current);
+    noteRepo
+      .update(id, { titleManual: manual, title })
+      .then(() => {
+        if (
+          pendingTitleRef.current?.id === id &&
+          pendingTitleRef.current?.value === value
+        ) {
+          pendingTitleRef.current = null;
+        }
+        setSaveState("saved");
+      })
+      .catch(() => {
+        useToastStore.getState().show("保存失败");
+        setSaveState("idle");
+      });
   };
 
   const debouncedTitleSave = useMemo(
     () =>
       debounce((id: string, value: string) => {
-        const manual = value.trim() === "" ? null : value;
-        titleManualRef.current = manual;
-        const title =
-          manual !== null ? manual : extractTitle(latestContentRef.current);
-        noteRepo
-          .update(id, { titleManual: manual, title })
-          .then(() => setSaveState("saved"));
+        // 防串写：回调携带发起时的 id，若已不是当前打开的笔记则丢弃
+        if (id !== activeNoteIdRef.current) return;
+        saveTitleNow(id, value);
       }, AUTOSAVE_DEBOUNCE_MS),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     []
   );
 
+  /** 切换笔记/卸载时落盘标题草稿：flush 而非丢弃（cleanup 中已先 cancel 防抖） */
+  const flushTitlePending = () => {
+    const pending = pendingTitleRef.current;
+    if (!pending) return;
+    pendingTitleRef.current = null;
+    saveTitleNow(pending.id, pending.value);
+  };
+
   const handleTitleChange = (value: string) => {
-    if (!activeNoteId) return;
+    const id = note?.id ?? activeNoteId;
+    if (!id) return;
     setTitleDraft(value);
     setSaveState("saving");
-    debouncedTitleSave(activeNoteId, value);
+    pendingTitleRef.current = { id, value };
+    debouncedTitleSave(id, value);
   };
 
   const resetTitleToAuto = () => {
-    if (!activeNoteId) return;
+    const id = note?.id ?? activeNoteId;
+    if (!id) return;
+    // 先取消待执行的手动标题保存：否则旧回调稍后执行会把手动标题写回
+    debouncedTitleSave.cancel();
+    pendingTitleRef.current = null;
     titleManualRef.current = null;
     const title = extractTitle(latestContentRef.current);
     setTitleDraft(title);
-    void noteRepo
-      .update(activeNoteId, { titleManual: null, title })
-      .then(() => setSaveState("saved"));
+    noteRepo
+      .update(id, { titleManual: null, title })
+      .then(() => setSaveState("saved"))
+      .catch(() => {
+        useToastStore.getState().show("保存失败");
+        setSaveState("idle");
+      });
   };
 
   if (!activeNoteId || (loaded && !note)) {
@@ -524,7 +590,9 @@ export function EditorPane() {
 
       {/* 编辑 / 源码 / 预览（块级混合编辑） */}
       {editorMode === "preview" ? (
+        // key 与另两个模式对齐：切换笔记时重挂，blocks 重新初始化（内部块草稿不跨笔记残留）
         <HybridPreview
+          key={note.id}
           content={latestContent}
           onChange={handleChange}
           editable={hybridEditing}

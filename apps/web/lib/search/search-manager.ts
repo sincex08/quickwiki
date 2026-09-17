@@ -61,6 +61,11 @@ const miniSearchOptions = {
   },
 };
 
+/** 命中结果条数上限 */
+const SEARCH_RESULT_LIMIT = 50;
+/** 正文分批读取的批大小：读满上限即停，避免大结果集全量读库 */
+const SEARCH_READ_BATCH = 100;
+
 class SearchManager {
   private index: MiniSearch<IndexedDoc> | null = null;
   private initPromise: Promise<void> | null = null;
@@ -235,32 +240,39 @@ class SearchManager {
     const hits = this.index.search(trimmed);
     if (hits.length === 0) return [];
 
-    // 按数据库现存笔记过滤，杜绝陈旧索引条目出现在结果里
-    const notes = await db.notes.bulkGet(hits.map((h) => h.id as string));
-    const noteMap = new Map(
-      notes.filter((n): n is Note => Boolean(n)).map((n) => [n.id, n])
-    );
-
-    // 去重兜底：同一笔记即使被重复索引也只返回一条
+    // 去重兜底：同一笔记即使被重复索引也只返回一条（保留首个/最高排名）
     const seen = new Set<string>();
-    return hits
-      .filter((h) => noteMap.has(h.id as string))
-      .filter((h) => {
-        const id = h.id as string;
-        if (seen.has(id)) return false;
-        seen.add(id);
-        return true;
-      })
-      .slice(0, 50)
-      .map((h) => {
-        const note = noteMap.get(h.id as string)!;
-        return {
+    const candidates: Array<{ id: string; score: number }> = [];
+    for (const h of hits) {
+      const id = h.id as string;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      candidates.push({ id, score: h.score });
+    }
+
+    // 分批读库并按排名累计到上限即停：不再为所有命中读取正文。
+    // 语义与旧行为等价——按数据库现存笔记过滤（缺失条目由后续批次补足）。
+    const results: SearchResult[] = [];
+    for (
+      let i = 0;
+      i < candidates.length && results.length < SEARCH_RESULT_LIMIT;
+      i += SEARCH_READ_BATCH
+    ) {
+      const batch = candidates.slice(i, i + SEARCH_READ_BATCH);
+      const notes = await db.notes.bulkGet(batch.map((c) => c.id));
+      for (let j = 0; j < batch.length; j++) {
+        const note = notes[j];
+        if (!note) continue;
+        results.push({
           id: note.id,
           title: note.title,
           snippet: makeSnippet(markdownToText(note.content), trimmed),
-          score: h.score,
-        };
-      });
+          score: batch[j].score,
+        });
+        if (results.length >= SEARCH_RESULT_LIMIT) break;
+      }
+    }
+    return results;
   }
 }
 

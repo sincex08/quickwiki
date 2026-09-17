@@ -82,6 +82,9 @@ export function NoteList({
       <div aria-hidden className="h-0.5 rounded-full bg-primary" />
     ) : null;
 
+  // 手动顺序判定只依赖列表数据，提到循环外：避免每行 some() 全表扫描（O(n²) → O(n)）
+  const manualOrder = sortable && notes.some((n) => n.sortOrder != null);
+
   return (
     <div className="space-y-2 p-3" data-note-list>
       {notes.map((note, index) => (
@@ -97,7 +100,7 @@ export function NoteList({
             sortable={sortable}
             canMoveUp={sortable && index > 0}
             canMoveDown={sortable && index < notes.length - 1}
-            manualOrder={sortable && notes.some((n) => n.sortOrder != null)}
+            manualOrder={manualOrder}
             onMoveUp={() => onMoveNote?.(note.id, -1)}
             onMoveDown={() => onMoveNote?.(note.id, 1)}
             onResetOrder={() => onResetOrder?.(note.notebookId ?? null)}

@@ -1,0 +1,34 @@
+# 质量门禁：typecheck / lint / 单元测试。
+# Node 用 22：vitest 5 要求 ^22.12（根 engines 的 >=20.9 是运行时下限，
+# 本地低版本 Node 跑 vitest 会报 engine 警告但不阻断）。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable corepack (pnpm)
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Unit tests
+        run: pnpm test

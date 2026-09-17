@@ -87,6 +87,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   fake.hooks.fail = null;
+  fake.hooks.beforeExecute = undefined;
   tables.notes = [];
   tables.notebooks = [];
   tables.attachments = [];
@@ -99,6 +100,200 @@ beforeEach(async () => {
     db.attachments.clear(),
     db.outbox.clear(),
   ]);
+});
+
+describe("pull：轮间游标持久化", () => {
+  it("首次拉取后复合游标同步到已推进的安全水位", async () => {
+    tables.notes.push(remoteNote({ id: "cursor-note", server_updated_at: clock.at(10_000) }));
+
+    await syncNow();
+
+    const cursor = await db.meta.get(`sync.lastPull:${USER_ID}`);
+    const pair = await db.meta.get(`sync.lastPullPair:${USER_ID}`);
+    expect(Date.parse(cursor!.value as string)).toBeGreaterThan(0);
+    expect(pair!.value).toEqual({ ts: cursor!.value, id: null });
+  });
+});
+
+describe("push：附件删除裁决", () => {
+  it("远端更新胜出时保留附件且不删除 Storage 文件", async () => {
+    const row = {
+      id: "att-kept", user_id: USER_ID, note_id: "attachment-note",
+      filename: "kept.png", mime: "image/png", size: 1,
+      width: 1, height: 1, hash: "hash", compressed: false,
+      created_at: clock.at(1000), updated_at: clock.at(3000),
+      server_updated_at: clock.at(3000), version: 2, deleted_at: null,
+    };
+    tables.attachments.push(row);
+    await db.attachments.put({
+      id: row.id, noteId: row.note_id, filename: row.filename, mime: row.mime,
+      size: 1, width: 1, height: 1, hash: row.hash, compressed: false,
+      createdAt: Date.parse(row.created_at), updatedAt: Date.parse(row.updated_at),
+      blob: new Blob(["x"]), syncVersion: 2,
+    });
+    await db.outbox.put({
+      key: `attachment:${row.id}`, kind: "attachment", entityId: row.id,
+      deleted: true, queuedAt: Date.parse(clock.at(2000)),
+    });
+    const remove = vi.fn(async () => ({ data: null, error: null }));
+    const storage = vi.spyOn(fake.sb.storage, "from").mockReturnValue({ remove });
+    try {
+      await syncNow();
+      expect(remove).not.toHaveBeenCalled();
+      expect(tables.attachments[0].deleted_at).toBeNull();
+      expect((await db.attachments.get(row.id))?.filename).toBe(row.filename);
+      expect(await db.outbox.get(`attachment:${row.id}`)).toBeUndefined();
+    } finally {
+      storage.mockRestore();
+    }
+  });
+});
+
+/** 挂起第一条满足条件的请求并返回放行函数：模拟「网络请求悬而未决」窗口，
+ *  在窗口内执行本地编辑/删除/重新入队，验证回执不覆盖新状态 */
+function gateRequest(matchMode: "update", matchTable: string): () => void {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  let gated = false;
+  fake.hooks.beforeExecute = ({ mode, table }) => {
+    if (gated || mode !== matchMode || table !== matchTable) return;
+    gated = true;
+    return gate;
+  };
+  return release;
+}
+
+describe("push：请求期间的本地编辑保护", () => {
+  it("网络期间再次编辑：旧回执不覆盖新内容，也不确认掉新一代队列操作", async () => {
+    tables.notes.push(
+      remoteNote({ id: "n-mid", content: "server-v1", version: 1 })
+    );
+    await db.notes.put(
+      localNote({ id: "n-mid", content: "local-v1", syncVersion: 1 })
+    );
+    await db.outbox.put({
+      key: "note:n-mid",
+      kind: "note",
+      entityId: "n-mid",
+      deleted: false,
+      queuedAt: 1,
+      revision: "rev-1",
+    });
+
+    const release = gateRequest("update", "notes");
+    const syncing = syncNow();
+    await new Promise((r) => setTimeout(r, 20)); // 等条件更新请求到达闸门
+    // 网络悬而未决期间：用户再次编辑 + 新一代操作覆盖同 key
+    await db.notes.update("n-mid", {
+      content: "local-v2",
+      updatedAt: Date.now(),
+    });
+    await db.outbox.put({
+      key: "note:n-mid",
+      kind: "note",
+      entityId: "n-mid",
+      deleted: false,
+      queuedAt: Date.now(),
+      revision: "rev-2",
+    });
+    release();
+    await syncing;
+
+    // 本地新编辑未被旧快照回写覆盖；新一代操作未被旧回执确认掉
+    expect((await db.notes.get("n-mid"))!.content).toBe("local-v2");
+    expect((await db.outbox.get("note:n-mid"))?.revision).toBe("rev-2");
+
+    // 下一轮把新编辑推上去并收敛
+    await syncNow();
+    expect(tables.notes.find((r) => r.id === "n-mid")!.content).toBe(
+      "local-v2"
+    );
+    expect(await db.outbox.get("note:n-mid")).toBeUndefined();
+    expect((await db.notes.get("n-mid"))!.syncVersion).toBe(
+      tables.notes.find((r) => r.id === "n-mid")!.version
+    );
+  });
+
+  it("网络期间删除：旧回执不复活本地记录，新一代删除操作下一轮生效", async () => {
+    tables.notes.push(
+      remoteNote({ id: "n-del", content: "server-v1", version: 1 })
+    );
+    await db.notes.put(
+      localNote({ id: "n-del", content: "local-v1", syncVersion: 1 })
+    );
+    await db.outbox.put({
+      key: "note:n-del",
+      kind: "note",
+      entityId: "n-del",
+      deleted: false,
+      queuedAt: 1,
+      revision: "rev-1",
+    });
+
+    const release = gateRequest("update", "notes");
+    const syncing = syncNow();
+    await new Promise((r) => setTimeout(r, 20));
+    await db.notes.delete("n-del");
+    await db.outbox.put({
+      key: "note:n-del",
+      kind: "note",
+      entityId: "n-del",
+      deleted: true,
+      queuedAt: Date.now(),
+      revision: "rev-2",
+    });
+    release();
+    await syncing;
+
+    // 旧回执只 patch 版本（对已删 key 是 no-op），不得复活本地记录
+    expect(await db.notes.get("n-del")).toBeUndefined();
+    expect(await db.outbox.get("note:n-del")).toBeDefined();
+
+    // 队列里的新一代删除操作把远端打成墓碑
+    await syncNow();
+    expect(tables.notes.find((r) => r.id === "n-del")!.deleted_at).not.toBeNull();
+    expect(await db.outbox.get("note:n-del")).toBeUndefined();
+  });
+
+  it("推送失败时失败计数按修订隔离，不污染请求期间的新操作", async () => {
+    tables.notes.push(
+      remoteNote({ id: "n-fail", content: "server-v1", version: 1 })
+    );
+    await db.notes.put(
+      localNote({ id: "n-fail", content: "local-v1", syncVersion: 1 })
+    );
+    await db.outbox.put({
+      key: "note:n-fail",
+      kind: "note",
+      entityId: "n-fail",
+      deleted: false,
+      queuedAt: 1,
+      revision: "rev-1",
+    });
+
+    const release = gateRequest("update", "notes");
+    const syncing = syncNow();
+    await new Promise((r) => setTimeout(r, 20));
+    fake.hooks.fail = "network down"; // release 后该请求失败
+    await db.outbox.put({
+      key: "note:n-fail",
+      kind: "note",
+      entityId: "n-fail",
+      deleted: false,
+      queuedAt: 2,
+      revision: "rev-2",
+    });
+    release();
+    await syncing;
+    fake.hooks.fail = null;
+
+    const cur = await db.outbox.get("note:n-fail");
+    expect(cur?.revision).toBe("rev-2");
+    expect(cur?.attempts).toBeUndefined();
+    expect(cur?.dead).toBeFalsy();
+  });
 });
 
 describe("push：乐观锁与 LWW 裁决", () => {

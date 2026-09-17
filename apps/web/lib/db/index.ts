@@ -29,6 +29,9 @@ export interface OutboxEntry {
   entityId: string;
   deleted: boolean;
   queuedAt: number;
+  /** 操作修订标识：每次入队生成新值；push 回执只确认/计数同一修订，
+   *  防止网络期间同 key 的新操作被旧请求确认掉、或被旧请求的失败计数污染 */
+  revision?: string;
   /** 连续推送失败次数（达到上限标记 dead，非索引字段，无需升库版本） */
   attempts?: number;
   /** 毒丸隔离：连续失败达上限后置位，push 跳过（防止无限重试卡住同步） */

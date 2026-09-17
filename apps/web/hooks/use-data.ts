@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   notebookRepo,
   noteRepo,
@@ -102,20 +102,25 @@ export function useNote(id: string | null) {
   const [loading, setLoading] = useState(false);
   /** 当前 id 的加载是否已完成（区分「加载中」与「确认不存在」） */
   const [loaded, setLoaded] = useState(false);
+  /** 请求序号：id 切换后，旧请求 / 旧订阅的回写一律丢弃，防陈旧数据闪回与串写 */
+  const seqRef = useRef(0);
 
   useEffect(() => {
+    const seq = ++seqRef.current;
     if (!id) {
       setNote(null);
       setLoading(false);
       setLoaded(false);
       return;
     }
-    let active = true;
+    // 保留旧笔记渲染到新数据就绪：IndexedDB 单键读取很快，清空反而让编辑区
+    // 每次切换都闪一帧空白。串写防护不依赖这里——保存目标以 note 自身 id 为准，
+    // 且防抖回调携带发起时的 id 校验当前笔记（editor-pane）
     setLoading(true);
     setLoaded(false);
     const load = () => {
       noteRepo.findById(id).then((n) => {
-        if (!active) return;
+        if (seqRef.current !== seq) return;
         setNote(n);
         setLoading(false);
         setLoaded(true);
@@ -124,7 +129,6 @@ export function useNote(id: string | null) {
     load();
     const unsub = subscribe("notes", load);
     return () => {
-      active = false;
       unsub();
     };
   }, [id]);

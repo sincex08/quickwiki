@@ -297,6 +297,13 @@ export async function initSync(): Promise<void> {
   }
 }
 
+/** outbox 操作修订标识：每次入队生成新值，push 回执按修订条件确认 */
+function newRevision(): string {
+  return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `rev-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 async function enqueue(
   kind: "note" | "notebook" | "attachment",
   ids: string[],
@@ -310,6 +317,7 @@ async function enqueue(
       entityId: id,
       deleted,
       queuedAt: Date.now(),
+      revision: newRevision(),
     }))
   );
 }
@@ -362,19 +370,31 @@ async function push(sb: SupabaseClient): Promise<string | null> {
       } else {
         await pushNotebook(sb, entry);
       }
-      await db.outbox.delete(entry.key);
+      // 条件确认：仅当队列里仍是本次推送的那一代操作才清除。
+      // 网络期间用户再次编辑会以新修订覆盖同 key，不能被旧回执顺带确认掉
+      await db.transaction("rw", db.outbox, async () => {
+        const cur = await db.outbox.get(entry.key);
+        if (cur && cur.revision === entry.revision) {
+          await db.outbox.delete(entry.key);
+        }
+      });
     } catch (e) {
       // 队头容错：单条失败保留条目并计数，达到上限标记 dead 隔离，
       // 继续推送后续条目，下轮同步重试
       lastError = e instanceof Error ? e.message : String(e);
       const attempts = Math.min((entry.attempts ?? 0) + 1, OUTBOX_MAX_ATTEMPTS);
       try {
-        await db.outbox.update(
-          entry.key,
-          attempts >= OUTBOX_MAX_ATTEMPTS
-            ? { attempts, dead: true }
-            : { attempts }
-        );
+        // 失败计数同样按修订保护：新操作已覆盖同 key 时不污染、更不能标 dead
+        await db.transaction("rw", db.outbox, async () => {
+          const cur = await db.outbox.get(entry.key);
+          if (!cur || cur.revision !== entry.revision) return;
+          await db.outbox.update(
+            entry.key,
+            attempts >= OUTBOX_MAX_ATTEMPTS
+              ? { attempts, dead: true }
+              : { attempts }
+          );
+        });
       } catch {
         // 计数失败不影响主流程
       }
@@ -457,50 +477,64 @@ async function insertRemote(
   return saved;
 }
 
-/** push 成功/被覆盖后把服务端版本写回本地（乐观锁基线） */
+/**
+ * push 成功/被覆盖后把服务端版本写回本地（乐观锁基线）。
+ * 只 patch 版本字段、绝不整行回写：网络往返期间本地可能已有新编辑/删除，
+ * 旧快照整行 put 会覆盖新内容或复活已删记录（update 对不存在的 key 是 no-op）。
+ */
 async function saveLocalVersion(
-  kind: "note" | "notebook",
+  kind: "note" | "notebook" | "attachment",
   id: string,
   version: number
 ): Promise<void> {
-  if (kind === "note") {
-    const local = await db.notes.get(id);
-    if (local) await db.notes.put({ ...local, syncVersion: version });
-  } else {
-    const local = await db.notebooks.get(id);
-    if (local) await db.notebooks.put({ ...local, syncVersion: version });
-  }
+  const table =
+    kind === "note"
+      ? db.notes
+      : kind === "notebook"
+        ? db.notebooks
+        : db.attachments;
+  await table.update(id, { syncVersion: version });
 }
 
 /**
  * 远端快照在手时的冲突裁决（push 冲突与旧数据无版本基线路径共用）：
+ * - 先重读本地：网络往返期间本地可能已再次编辑/删除，裁决与待推行
+ *   一律以提交时点的本地状态为准（本地胜出时推送的不再是过期快照）
+ * - 本地已被删除 → 本次更新作废，让位给队列里更新的删除操作（不得复活）
  * - 远端是墓碑且删除意图晚于本地最后编辑 → 接受删除
  * - 本地编辑时间晚于远端 server_updated_at → 以远端当前版本为基线覆盖写入
  *   （写入行带 deleted_at: null，可顺带复活墓碑）
  * - 否则远端胜出，强制回填本地（裁决已完成，跳过 pull 期的本地优先检查）
  */
-async function resolveWithRemote(
+async function resolveWithRemote<T extends { id: string; updatedAt: number }>(
   sb: SupabaseClient,
-  table: SyncTable,
+  table: "notes" | "notebooks",
   kind: "note" | "notebook",
-  row: Record<string, unknown> & { id: string },
-  localUpdatedAt: number,
+  id: string,
+  buildRow: (fresh: T) => Record<string, unknown> & { id: string },
   remote: RemoteRowMeta
 ): Promise<void> {
+  const fresh = (
+    table === "notes" ? await db.notes.get(id) : await db.notebooks.get(id)
+  ) as T | undefined;
+  if (!fresh) return;
+  const row = buildRow(fresh);
+  const localUpdatedAt = fresh.updatedAt;
+
   if (remote.deleted_at) {
     if (localUpdatedAt > ts(remote.deleted_at)) {
       // 本地编辑比删除意图新 → 复活：覆盖写入并清除墓碑
       const again = await sb
         .from(table)
         .update(row)
-        .eq("id", row.id)
+        .eq("id", id)
         .eq("version", remote.version)
         .select();
       if (again.error) throw new Error(again.error.message);
       if (again.data && again.data.length > 0) {
         await saveLocalVersion(
           kind,
-          row.id,
+          id,
           (again.data[0] as RemoteRowMeta).version
         );
         return;
@@ -515,14 +549,14 @@ async function resolveWithRemote(
     const again = await sb
       .from(table)
       .update(row)
-      .eq("id", row.id)
+      .eq("id", id)
       .eq("version", remote.version)
       .select();
     if (again.error) throw new Error(again.error.message);
     if (again.data && again.data.length > 0) {
       await saveLocalVersion(
         kind,
-        row.id,
+        id,
         (again.data[0] as RemoteRowMeta).version
       );
       return;
@@ -575,7 +609,7 @@ async function pushTombstone(
       .eq("version", remote.version)
       .select();
     if (del.error) throw new Error(del.error.message);
-    if (del.data && del.data.length > 0) return remote;
+    if (del.data && del.data.length > 0) return del.data[0] as RemoteRowMeta;
     remote = await fetchRemote(sb, table, entry.entityId);
     if (!remote || remote.deleted_at) return remote;
   }
@@ -617,22 +651,24 @@ async function pushNote(
   // 但绝不会因为一个可选列让 outbox 变毒丸（推不动 → 这台设备的编辑全堵住）
   const includeSortOrder = await hasSortOrderColumn(sb);
 
-  // 正文即协议引用（quickwiki-att://），本地与服务端同内容、零改写
-  const row = {
-    id: note.id,
+  // 正文即协议引用（quickwiki-att://），本地与服务端同内容、零改写。
+  // 行按传入实体构建：冲突裁决重读本地后用最新内容重建，不推过期快照
+  const buildRow = (n: Note) => ({
+    id: n.id,
     user_id: userId,
-    notebook_id: note.notebookId,
-    title: note.title,
-    title_manual: note.titleManual,
-    content: note.content,
-    tags: note.tags,
-    pinned: note.pinned,
-    ...(includeSortOrder ? { sort_order: note.sortOrder ?? null } : {}),
-    created_at: new Date(note.createdAt).toISOString(),
-    updated_at: new Date(note.updatedAt).toISOString(),
+    notebook_id: n.notebookId,
+    title: n.title,
+    title_manual: n.titleManual,
+    content: n.content,
+    tags: n.tags,
+    pinned: n.pinned,
+    ...(includeSortOrder ? { sort_order: n.sortOrder ?? null } : {}),
+    created_at: new Date(n.createdAt).toISOString(),
+    updated_at: new Date(n.updatedAt).toISOString(),
     // 内容更新顺带清除墓碑（复活路径）
     deleted_at: null,
-  };
+  });
+  const row = buildRow(note);
 
   if (note.syncVersion == null) {
     // 无乐观锁基线（新创建未同步过，或旧版本构建遗留的数据）：
@@ -640,10 +676,17 @@ async function pushNote(
     const remote = await fetchRemote(sb, "notes", note.id);
     if (!remote) {
       const saved = await insertRemote(sb, "notes", row);
-      await db.notes.put({ ...note, syncVersion: saved.version });
+      await saveLocalVersion("note", note.id, saved.version);
       return;
     }
-    await resolveWithRemote(sb, "notes", "note", row, note.updatedAt, remote);
+    await resolveWithRemote<Note>(
+      sb,
+      "notes",
+      "note",
+      note.id,
+      buildRow,
+      remote
+    );
     return;
   }
 
@@ -656,10 +699,11 @@ async function pushNote(
     .select();
   if (updated.error) throw new Error(updated.error.message);
   if (updated.data && updated.data.length > 0) {
-    await db.notes.put({
-      ...note,
-      syncVersion: (updated.data[0] as RemoteRowMeta).version,
-    });
+    await saveLocalVersion(
+      "note",
+      note.id,
+      (updated.data[0] as RemoteRowMeta).version
+    );
     return;
   }
 
@@ -667,10 +711,17 @@ async function pushNote(
   const remote = await fetchRemote(sb, "notes", note.id);
   if (!remote) {
     const saved = await insertRemote(sb, "notes", row);
-    await db.notes.put({ ...note, syncVersion: saved.version });
+    await saveLocalVersion("note", note.id, saved.version);
     return;
   }
-  await resolveWithRemote(sb, "notes", "note", row, note.updatedAt, remote);
+  await resolveWithRemote<Note>(
+    sb,
+    "notes",
+    "note",
+    note.id,
+    buildRow,
+    remote
+  );
 }
 
 async function pushNotebook(
@@ -685,30 +736,32 @@ async function pushNotebook(
     return;
   }
 
-  const row = {
-    id: nb.id,
+  // 行按传入实体构建：冲突裁决重读本地后用最新内容重建，不推过期快照
+  const buildRow = (n: Notebook) => ({
+    id: n.id,
     user_id: userId,
-    name: nb.name,
-    color: nb.color,
-    parent_id: nb.parentId ?? null,
-    created_at: new Date(nb.createdAt).toISOString(),
-    updated_at: new Date(nb.updatedAt).toISOString(),
+    name: n.name,
+    color: n.color,
+    parent_id: n.parentId ?? null,
+    created_at: new Date(n.createdAt).toISOString(),
+    updated_at: new Date(n.updatedAt).toISOString(),
     deleted_at: null,
-  };
+  });
+  const row = buildRow(nb);
 
   if (nb.syncVersion == null) {
     const remote = await fetchRemote(sb, "notebooks", nb.id);
     if (!remote) {
       const saved = await insertRemote(sb, "notebooks", row);
-      await db.notebooks.put({ ...nb, syncVersion: saved.version });
+      await saveLocalVersion("notebook", nb.id, saved.version);
       return;
     }
-    await resolveWithRemote(
+    await resolveWithRemote<Notebook>(
       sb,
       "notebooks",
       "notebook",
-      row,
-      nb.updatedAt,
+      nb.id,
+      buildRow,
       remote
     );
     return;
@@ -722,25 +775,26 @@ async function pushNotebook(
     .select();
   if (updated.error) throw new Error(updated.error.message);
   if (updated.data && updated.data.length > 0) {
-    await db.notebooks.put({
-      ...nb,
-      syncVersion: (updated.data[0] as RemoteRowMeta).version,
-    });
+    await saveLocalVersion(
+      "notebook",
+      nb.id,
+      (updated.data[0] as RemoteRowMeta).version
+    );
     return;
   }
 
   const remote = await fetchRemote(sb, "notebooks", nb.id);
   if (!remote) {
     const saved = await insertRemote(sb, "notebooks", row);
-    await db.notebooks.put({ ...nb, syncVersion: saved.version });
+    await saveLocalVersion("notebook", nb.id, saved.version);
     return;
   }
-  await resolveWithRemote(
+  await resolveWithRemote<Notebook>(
     sb,
     "notebooks",
     "notebook",
-    row,
-    nb.updatedAt,
+    nb.id,
+    buildRow,
     remote
   );
 }
@@ -759,8 +813,8 @@ async function pushAttachment(
 
   if (entry.deleted || !att) {
     const remote = await pushTombstone(sb, "attachments", entry);
-    // 元数据墓碑落定后尽力删除 Storage 对象（失败仅记日志，孤儿由清理任务兜底）
-    if (remote) {
+    // 仅墓碑裁决允许清理文件；删除让位时返回的仍是存活行。
+    if (remote?.deleted_at) {
       const row = remote as RemoteAttachment;
       const path = `${userId}/${row.note_id}/${row.id}.${attachmentExt(row.mime)}`;
       try {
@@ -816,7 +870,7 @@ async function pushAttachment(
     if (up.error) throw new Error(`附件二进制上传失败：${up.error.message}`);
   }
 
-  await db.attachments.put({ ...att, syncVersion: remote.version });
+  await saveLocalVersion("attachment", att.id, remote.version);
 }
 
 // ---------- 拉取 ----------
@@ -908,7 +962,10 @@ async function pull(sb: SupabaseClient): Promise<void> {
     key: cursorKey,
     value: new Date(nextCursorTs).toISOString(),
   });
-  await db.meta.put({ key: pairKey, value: pair });
+  await db.meta.put({
+    key: pairKey,
+    value: { ts: new Date(nextCursorTs).toISOString(), id: null },
+  });
 
   // 附件独立游标：元数据先行，blob 缺失由懒下载回填
   const attCursorKey = `sync.lastPullAtt:${userId}`;
@@ -939,7 +996,10 @@ async function pull(sb: SupabaseClient): Promise<void> {
     key: attCursorKey,
     value: new Date(attNextTs).toISOString(),
   });
-  await db.meta.put({ key: attPairKey, value: attPair });
+  await db.meta.put({
+    key: attPairKey,
+    value: { ts: new Date(attNextTs).toISOString(), id: null },
+  });
 
   await sweepOrphanNotes();
 }

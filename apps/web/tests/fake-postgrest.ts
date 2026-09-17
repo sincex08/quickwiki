@@ -62,6 +62,12 @@ function makeOr(expr: string): (r: Row) => boolean {
 export interface FakePostgrestHooks {
   /** 非 null 时所有请求返回 error（毒丸/网络故障注入） */
   fail: string | null;
+  /** 每次请求执行前回调；返回 promise 可挂起该请求，
+   *  用于构造「网络请求悬而未决期间本地继续编辑/删除」的交错场景 */
+  beforeExecute?: (req: {
+    mode: "select" | "insert" | "update";
+    table: string;
+  }) => Promise<void> | void;
 }
 
 export class FakePostgrest {
@@ -74,7 +80,8 @@ export class FakePostgrest {
   constructor(
     private store: Row[],
     private clock: FakeClock,
-    private hooks: FakePostgrestHooks
+    private hooks: FakePostgrestHooks,
+    private table: string
   ) {}
 
   select(_cols = "*"): this {
@@ -121,6 +128,7 @@ export class FakePostgrest {
     data: Row[] | null;
     error: { message: string } | null;
   }> {
+    await this.hooks.beforeExecute?.({ mode: this.mode, table: this.table });
     if (this.hooks.fail) return { data: null, error: { message: this.hooks.fail } };
 
     if (this.mode === "insert") {
@@ -171,7 +179,12 @@ export function createFakeSupabase(clock: FakeClock, tables: Record<string, Row[
   const hooks: FakePostgrestHooks = { fail: null };
   const sb: any = {
     from(table: string) {
-      return new FakePostgrest(tables[table] ?? (tables[table] = []), clock, hooks);
+      return new FakePostgrest(
+        tables[table] ?? (tables[table] = []),
+        clock,
+        hooks,
+        table
+      );
     },
     storage: {
       from(_bucket: string) {
