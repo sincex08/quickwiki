@@ -176,22 +176,17 @@ function NoteRow({
         className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-left"
         title={note.title}
       >
-        {/* 置顶小标：触屏无 hover，md 以下常显；lg 以上悬浮/选中时出现 */}
+        {/* 置顶小标常显：排序本就把置顶排最前，图标是它唯一的可辨识标记，
+            隐藏会造成「平时不显示但占位」的幻影缩进 */}
         {note.pinned && (
-          <Pin
-            className={cn(
-              "h-3 w-3 shrink-0 fill-primary text-primary transition-opacity",
-              !active && "lg:opacity-0 lg:group-hover:opacity-100"
-            )}
-            aria-hidden
-          />
+          <Pin className="h-3 w-3 shrink-0 fill-primary text-primary" aria-hidden />
         )}
         <span className={cn("truncate", !active && "text-foreground/90")}>
           {note.title}
         </span>
         <span
           className={cn(
-            "hidden shrink-0 pl-2 text-[11px] text-muted-foreground/80 transition-opacity md:inline",
+            "ml-auto hidden shrink-0 pl-2 text-[11px] text-muted-foreground/80 transition-opacity md:inline",
             !active && "lg:opacity-0 lg:group-hover:opacity-100"
           )}
         >
