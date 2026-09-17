@@ -3,6 +3,7 @@ import { emitChange } from "@/lib/events";
 import { normalizeTag } from "@/lib/utils";
 import {
   cleanTags,
+  ensureNoteTag,
   incrementTagCounts,
   retractNoteTags,
   syncNoteTags,
@@ -180,7 +181,12 @@ class IndexedDBNoteRepository implements NoteRepository {
       updates.tags !== undefined ? cleanTags(updates.tags) : null;
 
     await db.transaction("rw", db.notes, db.noteTags, db.tags, async () => {
-      await db.notes.update(id, { ...updates, updatedAt: Date.now() });
+      // tags 写入规范化结果而非原始输入：与 noteTags/tags 的维护口径一致，防快照漂移
+      await db.notes.update(id, {
+        ...updates,
+        ...(nextTags !== null ? { tags: nextTags } : {}),
+        updatedAt: Date.now(),
+      });
 
       if (nextTags) {
         const tagsChanged = await syncNoteTags(
@@ -204,7 +210,9 @@ class IndexedDBNoteRepository implements NoteRepository {
 
     await db.transaction("rw", db.notes, db.noteTags, db.tags, async () => {
       await db.notes.delete(id);
-      await retractNoteTags(id, cleanTags(existing.tags));
+      // 按关系表实际行回收（而非 note.tags）：两者分叉时按后者会漏减，
+      // 计数器成为永远清不掉的孤儿
+      await retractNoteTags(id);
     });
 
     emitChange("notes", { type: "delete", ids: [id] });
@@ -221,9 +229,11 @@ class IndexedDBNoteRepository implements NoteRepository {
     await db.transaction("rw", db.notes, db.noteTags, db.tags, async () => {
       await db.notes.put(restored);
       for (const tagName of tags) {
-        await db.noteTags.put({ noteId: restored.id, tagName });
+        // 幂等建关联：残留的旧关系行不再引发重复计数
+        if (await ensureNoteTag(restored.id, tagName)) {
+          await incrementTagCounts([tagName]);
+        }
       }
-      await incrementTagCounts(tags);
     });
 
     emitChange("notes", { type: "create", ids: [restored.id] });

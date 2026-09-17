@@ -9,6 +9,7 @@ import {
 } from "@/lib/data/attachment-repository";
 import {
   cleanTags,
+  reconcileTags,
   retractNoteTags,
   syncNoteTags,
 } from "@/lib/data/tag-counts";
@@ -1002,6 +1003,11 @@ async function pull(sb: SupabaseClient): Promise<void> {
   });
 
   await sweepOrphanNotes();
+  // 标签对账：以 notes.tags 为事实重建 noteTags/计数，修复历史分叉
+  // （如旧版 push 回写覆盖 note.tags 后残留的孤儿计数）。幂等，无漂移零写入
+  if (await reconcileTags()) {
+    emitChange("tags", { type: "update", ids: [] });
+  }
 }
 
 /**
@@ -1073,9 +1079,9 @@ async function applyRemoteNote(row: RemoteNote, force = false): Promise<void> {
       const tags = cleanTags(local?.tags);
       await db.transaction("rw", db.notes, db.noteTags, db.tags, async () => {
         await db.notes.delete(row.id);
-        // 与本地删除路径一致回收标签关联与计数，否则同步拉取的删除
+        // 与本地删除路径一致按关系表回收标签，否则同步拉取的删除
         // 会让标签角标虚高、noteTags 残留死行
-        await retractNoteTags(row.id, tags);
+        await retractNoteTags(row.id);
       });
       await db.outbox.delete(`note:${row.id}`);
       // 远端删除已级联附件：本地附件直接清理（无需入队，墓碑由附件 pull 收敛）

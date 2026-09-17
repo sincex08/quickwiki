@@ -160,6 +160,13 @@ Repository 抽象与本地 outbox 机制可复用。
     仅当远端行确实是墓碑才清理；条件删除成功返回删除后的行而非裁决前快照。
   - 测试基建：fake-postgrest 增加 `beforeExecute` 请求闸门，可挂起指定请求构造
     「网络期间本地继续编辑/删除/重新入队」的交错；对应 3 个回归测试先红后绿。
+  - 标签一致性（旧回写 bug 的余波修复）：`note.tags` 被旧快照清空后，noteTags
+    关系行/计数器成为孤儿——表现为「标签空但计数 1、再打同名标签失败（主键冲突
+    中止整个写事务）、删除不清零」。修复：`syncNoteTags`/`restore` 幂等建关联
+    （已存在不抛错不重复计数）；删除/远端墓碑按 **noteTags 关系表**实际行回收计数
+    （不信任已漂移的 note.tags）；`reconcileTags()` 以 notes.tags 为唯一事实
+    重建关联与计数，随每轮 pull 执行（幂等、无漂移零写入），存量脏数据打开应用
+    首次同步即自动修复。
   - 同轮 UI 加固：标题防抖切换/卸载时按发起 id flush、防抖回调校验 id 防串写、
     「恢复自动标题」先取消待保存、保存失败 toast 并保持 dirty；
     预览模式 ReactMarkdown 定向放行 `quickwiki-att:` / `data:image/`
