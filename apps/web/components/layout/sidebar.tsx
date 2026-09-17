@@ -16,7 +16,6 @@ import {
   ArrowUp,
   Book,
   ChevronRight,
-  FileText,
   FolderPlus,
   MoreHorizontal,
   Pencil,
@@ -83,7 +82,7 @@ function TreeGuides({ levels }: { levels: number }) {
         <span
           key={level}
           aria-hidden
-          className="pointer-events-none absolute inset-y-0 w-px bg-muted-foreground/30"
+          className="pointer-events-none absolute inset-y-0 w-px bg-border"
           style={{ left: guideX(level) - 0.5 }}
         />
       ))}
@@ -153,8 +152,8 @@ function NoteRow({
       {...(sortable ? noteRowDragProps(note, index) : {})}
       onPointerDown={sortable ? (e) => actions.onDragStart(e, note) : undefined}
       className={cn(
-        "group relative flex w-full items-center rounded-md pr-1.5 text-sm transition-colors hover:bg-accent [-webkit-touch-callout:none]",
-        active && "bg-accent text-accent-foreground",
+        "group relative flex h-8 w-full items-center rounded-md pr-1.5 text-[13px] transition-colors hover:bg-accent/50 [-webkit-touch-callout:none]",
+        active && "bg-accent/60 font-medium",
         // 已按下（鼠标等位移 / 触摸等长按）：先给一层按压反馈，
         // 让人知道「按住生效了」，不用猜什么时候可以拖
         pressed && !dragging && "bg-accent/70 ring-1 ring-primary/30",
@@ -163,23 +162,39 @@ function NoteRow({
       )}
       style={{ paddingLeft: indentOf(depth) }}
     >
+      <span
+        aria-hidden
+        className={cn(
+          "pointer-events-none absolute inset-y-1.5 left-0 w-[3px] rounded-r-full bg-primary transition-opacity",
+          active ? "opacity-100" : "opacity-0"
+        )}
+      />
       <TreeGuides levels={depth} />
       <button
         type="button"
         onClick={() => actions.onOpenNote(note.id)}
-        className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden py-1.5 text-left"
+        className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-left"
         title={note.title}
       >
-        {/* 小文件图标：与笔记本的色点区分「这一行是笔记」，也让笔记块自成一段 */}
-        <FileText
-          className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70"
-          aria-hidden
-        />
+        {/* 置顶小标：触屏无 hover，md 以下常显；lg 以上悬浮/选中时出现 */}
         {note.pinned && (
-          <Pin className="h-3 w-3 shrink-0 fill-primary text-primary" />
+          <Pin
+            className={cn(
+              "h-3 w-3 shrink-0 fill-primary text-primary transition-opacity",
+              !active && "lg:opacity-0 lg:group-hover:opacity-100"
+            )}
+            aria-hidden
+          />
         )}
-        <span className="truncate">{note.title}</span>
-        <span className="ml-auto shrink-0 pl-2 text-[11px] text-muted-foreground">
+        <span className={cn("truncate", !active && "text-foreground/90")}>
+          {note.title}
+        </span>
+        <span
+          className={cn(
+            "hidden shrink-0 pl-2 text-[11px] text-muted-foreground/80 transition-opacity md:inline",
+            !active && "lg:opacity-0 lg:group-hover:opacity-100"
+          )}
+        >
           {formatDistanceToNowStrict(note.updatedAt, {
             locale: zhCN,
             addSuffix: true,
@@ -387,13 +402,20 @@ function NotebookNode({
     <div>
       <div
         className={cn(
-          "group relative flex w-full items-center gap-0.5 rounded-md pr-1.5 text-sm transition-colors hover:bg-accent",
-          selected && "bg-accent text-accent-foreground"
+          "group relative flex h-8 w-full items-center gap-0.5 rounded-md pr-1.5 text-[13px] transition-colors hover:bg-accent/50",
+          selected && "bg-accent/60"
         )}
         style={{ paddingLeft: indentOf(depth) }}
         // 拖笔记到这个笔记本行上 = 移入该笔记本（置于最前）
         data-note-drop-container={notebook.id}
       >
+        <span
+          aria-hidden
+          className={cn(
+            "pointer-events-none absolute inset-y-1.5 left-0 w-[3px] rounded-r-full bg-primary transition-opacity",
+            selected ? "opacity-100" : "opacity-0"
+          )}
+        />
         <TreeGuides levels={depth} />
         {hasChildren ? (
           <button
@@ -420,18 +442,18 @@ function NotebookNode({
             if (!selected && hasChildren) onToggle(notebook.id);
             onSelect(notebook.id);
           }}
-          className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden py-1.5 text-left"
+          className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-left"
           title={notebook.name}
         >
           <span
-            className="h-2.5 w-2.5 shrink-0 rounded-full"
+            className="h-2 w-2 shrink-0 rounded-full ring-1 ring-inset ring-black/10 dark:ring-white/15"
             style={{ backgroundColor: notebook.color }}
           />
           {/* 笔记本名加粗一档：与笔记行的常规字重区分，形成「文件夹 / 文件」的层级感 */}
           <span className="truncate font-medium">{notebook.name}</span>
           {/* 角标与展开后的笔记列表同源（都来自 childNotes），
               不会再出现「数字与条目数对不上」或新增后不跳动 */}
-          <span className="ml-auto shrink-0 pl-2 text-xs text-muted-foreground">
+          <span className="ml-auto shrink-0 pl-2 text-[11px] text-muted-foreground/70">
             {childNotes.length}
           </span>
         </button>
@@ -737,8 +759,8 @@ export function SidebarContent() {
           {/* 未分类：不属于任何笔记本的笔记，同样可展开 */}
           <div
             className={cn(
-              "group relative flex w-full items-center gap-0.5 rounded-md pr-1.5 text-sm transition-colors hover:bg-accent",
-              notebookFilter === "none" && "bg-accent text-accent-foreground"
+              "group relative flex h-8 w-full items-center gap-0.5 rounded-md pr-1.5 text-[13px] transition-colors hover:bg-accent/50",
+              notebookFilter === "none" && "bg-accent/60 font-medium"
             )}
             style={{ paddingLeft: indentOf(0) }}
             title="不属于任何笔记本的笔记"
@@ -771,11 +793,12 @@ export function SidebarContent() {
                   toggleTreeExpandedId("none");
                 selectNotebook("none");
               }}
-              className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left"
+              className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
             >
-              <span className="h-2.5 w-2.5 shrink-0 rounded-full border border-dashed border-muted-foreground" />
+              {/* 与笔记本色点同规格的中性点：空分类也有稳定的视觉锚 */}
+              <span className="h-2 w-2 shrink-0 rounded-full bg-muted-foreground/50" />
               <span className="truncate">未分类</span>
-              <span className="ml-auto shrink-0 pl-2 text-xs text-muted-foreground">
+              <span className="ml-auto shrink-0 pl-2 text-[11px] text-muted-foreground/70">
                 {uncategorizedNotes.length}
               </span>
             </button>

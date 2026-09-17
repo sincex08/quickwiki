@@ -35,13 +35,15 @@ import { MarkdownSource } from "@/components/editor/markdown-source";
 import { HybridPreview } from "@/components/editor/hybrid-preview";
 import { TagEditor } from "@/components/notes/tag-editor";
 import { AttachmentDrawer } from "@/components/attachments/attachment-drawer";
-import { useNote, useNotebooks } from "@/hooks/use-data";
+import { useNote, useNotebooks, useTags } from "@/hooks/use-data";
 import { useNoteActions } from "@/hooks/use-note-actions";
 import { useUIStore, type EditorMode } from "@/stores/use-ui-store";
 import { useToastStore } from "@/stores/use-toast-store";
 import { noteRepo } from "@/lib/data/repository";
 import { releaseAllObjectUrls } from "@/lib/attachments/resolve";
 import { cn, debounce, extractTitle } from "@/lib/utils";
+import { countWords } from "@/lib/word-count";
+import { OutlineMenuButton, OutlineSubmenu } from "@/components/editor/outline-menu";
 
 /**
  * 编辑区统一水平内边距：头部 / 标题 / 标签 / 正文共用同一条左边缘。
@@ -58,6 +60,12 @@ export function EditorPane() {
   const setHybridEditing = useUIStore((s) => s.setHybridEditing);
   const { note, loaded } = useNote(activeNoteId);
   const { notebooks } = useNotebooks();
+  const { tags: tagStats } = useTags();
+  /** 标签补全建议的数据源：全量标签字典（名称） */
+  const tagNames = useMemo(
+    () => tagStats.map((t) => t.name).sort((a, b) => a.localeCompare(b)),
+    [tagStats]
+  );
   const { deleteNote, togglePin, moveToNotebook } = useNoteActions();
   const attachmentsDrawerOpen = useUIStore((s) => s.attachmentsDrawerOpen);
   const setAttachmentsDrawerOpen = useUIStore((s) => s.setAttachmentsDrawerOpen);
@@ -159,6 +167,19 @@ export function EditorPane() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeNoteId]);
+
+  // 全局快捷键 Ctrl/Cmd+S：立即 flush 防抖中的正文与标题草稿（不丢最后一笔）
+  useEffect(() => {
+    const onFlush = () => {
+      debouncedSave.cancel();
+      flushPending();
+      debouncedTitleSave.cancel();
+      flushTitlePending();
+    };
+    window.addEventListener("quickwiki:flush-save", onFlush);
+    return () => window.removeEventListener("quickwiki:flush-save", onFlush);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleChange = (markdown: string) => {
     // 写入目标以 note 自身 id 为准，避免 useNote 未跟随时用旧 activeNoteId 串写
@@ -381,6 +402,7 @@ export function EditorPane() {
               <Pin className={note.pinned ? "mr-2 h-4 w-4 fill-primary text-primary" : "mr-2 h-4 w-4"} />
               {note.pinned ? "取消置顶" : "置顶"}
             </DropdownMenuItem>
+            <OutlineSubmenu markdown={latestContent} onNavigate={() => {}} />
             <DropdownMenuSeparator />
             <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
               移动到笔记本
@@ -488,6 +510,9 @@ export function EditorPane() {
           <Pin className={note.pinned ? "h-4 w-4 fill-primary text-primary" : "h-4 w-4"} />
         </Button>
 
+        {/* 大纲（标题跳转，三模式通用） */}
+        <OutlineMenuButton markdown={latestContent} />
+
         {/* 三模式分段控件：编辑 / Markdown 源码 / 预览 */}
         <div className="inline-flex shrink-0 items-center gap-0.5 rounded-md border p-0.5">
           {modeButtons.map(({ mode, label, icon }) => (
@@ -571,6 +596,7 @@ export function EditorPane() {
           <TagEditor
             tags={note.tags}
             onChange={(tags) => void noteRepo.update(note.id, { tags })}
+            suggestions={tagNames}
             autoFocus
           />
         </div>
@@ -615,6 +641,27 @@ export function EditorPane() {
           autofocus
         />
       )}
+
+      {/* 字数状态条（三模式通用；移动端收起以省空间） */}
+      <div
+        className={cn(
+          "hidden shrink-0 items-center justify-end border-t py-0.5 text-[11px] text-muted-foreground md:flex",
+          PANE_PX
+        )}
+      >
+        {(() => {
+          const wc = countWords(latestContent);
+          return (
+            <span>
+              {wc.total.toLocaleString()} 字
+              <span className="ml-2 text-muted-foreground/70">
+                {wc.chinese.toLocaleString()} 中文 · {wc.words.toLocaleString()}{" "}
+                英文词 · {wc.chars.toLocaleString()} 字符
+              </span>
+            </span>
+          );
+        })()}
+      </div>
 
       <ConfirmDialog
         open={confirmOpen}

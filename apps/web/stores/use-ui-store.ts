@@ -90,6 +90,10 @@ interface UIState {
   treeExpandedIds: string[];
   /** 源码视图重挂载计数：抽屉等外部路径改写正文后 bump，刷新 textarea 内容 */
   sourceNonce: number;
+  /** 命令面板（Ctrl/Cmd+K）开关：全局快捷键与头部按钮共用 */
+  commandPaletteOpen: boolean;
+  /** 功能说明弹窗开关：头部按钮与快捷键共用一份状态 */
+  helpOpen: boolean;
 
   setNotebookFilter: (id: NotebookFilter | null) => void;
   setTagFilter: (tag: string | null) => void;
@@ -103,6 +107,8 @@ interface UIState {
   /** 幂等展开（并集）：搜索结果跳转后把侧栏树展开到目标笔记本 */
   expandTreeIds: (ids: string[]) => void;
   bumpSourceNonce: () => void;
+  setCommandPaletteOpen: (open: boolean) => void;
+  setHelpOpen: (open: boolean) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -116,6 +122,8 @@ export const useUIStore = create<UIState>((set) => ({
   noteListTitleOnly: readListTitleOnlyDefault(),
   treeExpandedIds: readTreeExpandedDefault(),
   sourceNonce: 0,
+  commandPaletteOpen: false,
+  helpOpen: false,
 
   setNotebookFilter: (id) => {
     // 记住位置：下次打开应用直接回到这里
@@ -169,6 +177,8 @@ export const useUIStore = create<UIState>((set) => ({
       return { treeExpandedIds: merged };
     }),
   bumpSourceNonce: () => set((s) => ({ sourceNonce: s.sourceNonce + 1 })),
+  setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
+  setHelpOpen: (open) => set({ helpOpen: open }),
 }));
 
 /** 树展开状态写 localStorage（失败静默，如隐私模式） */

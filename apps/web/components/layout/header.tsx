@@ -154,7 +154,10 @@ export function Header({ onNewNote, onOpenSidebar }: HeaderProps) {
   const { theme, toggleTheme } = useTheme();
   const activeNoteId = useUIStore((s) => s.activeNoteId);
   const [exporting, setExporting] = useState(false);
-  const [featuresOpen, setFeaturesOpen] = useState(false);
+  // 功能说明弹窗状态放 store：Ctrl+/ 全局快捷键与头部按钮共用一份
+  const featuresOpen = useUIStore((s) => s.helpOpen);
+  const setFeaturesOpen = useUIStore((s) => s.setHelpOpen);
+  const setCommandPaletteOpen = useUIStore((s) => s.setCommandPaletteOpen);
 
   // 预热搜索索引，减少首次搜索等待
   useEffect(() => {
@@ -244,6 +247,10 @@ export function Header({ onNewNote, onOpenSidebar }: HeaderProps) {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-44">
+            {/* 命令面板的触屏入口：快捷键 Ctrl+K 只在桌面可用 */}
+            <DropdownMenuItem onClick={() => setCommandPaletteOpen(true)}>
+              命令面板
+            </DropdownMenuItem>
             <DropdownMenuItem disabled={!activeNoteId} onClick={handleExportMarkdown}>
               导出当前笔记（Markdown）
             </DropdownMenuItem>

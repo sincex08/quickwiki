@@ -38,6 +38,7 @@ export function SearchBox() {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const boxRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   const { items, searching, isSearching } = useSearchPanel(query);
 
@@ -45,6 +46,16 @@ export function SearchBox() {
   useEffect(() => {
     setActiveIndex(0);
   }, [query]);
+
+  // 全局快捷键 Ctrl/Cmd+F：聚焦搜索框并全选已有词
+  useEffect(() => {
+    const onFocus = () => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    };
+    window.addEventListener("quickwiki:focus-search", onFocus);
+    return () => window.removeEventListener("quickwiki:focus-search", onFocus);
+  }, []);
 
   // 点击面板外部收起（用 pointerdown：早于 click，避免与结果点击竞争）
   useEffect(() => {
@@ -113,6 +124,7 @@ export function SearchBox() {
     <div ref={boxRef} className="relative w-full min-w-0 max-w-md">
       <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
       <input
+        ref={inputRef}
         value={query}
         onChange={(e) => {
           setQuery(e.target.value);

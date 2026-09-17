@@ -178,7 +178,7 @@ export function NoteListPane() {
 
       {/* 移动端新建笔记 FAB */}
       <Button
-        className="fixed bottom-24 right-4 z-40 h-[52px] w-[52px] rounded-full p-0 shadow-lg md:hidden"
+        className="fixed bottom-6 right-4 z-40 h-[52px] w-[52px] rounded-full p-0 shadow-lg md:hidden"
         onClick={() => void createNote()}
         aria-label="新建笔记"
         title="新建笔记"

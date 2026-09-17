@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { EditorContent, useEditor, type Editor } from "@tiptap/react";
+import { EditorContent, useEditor, ReactNodeViewRenderer, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
+import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import { Markdown } from "tiptap-markdown";
 import Link from "@tiptap/extension-link";
 import TaskList from "@tiptap/extension-task-list";
@@ -15,6 +16,8 @@ import TableCell from "@tiptap/extension-table-cell";
 import { MarkdownInlineShortcuts } from "./markdown-shortcuts";
 import { Toolbar } from "./toolbar";
 import { AttachmentImage } from "./attachment-image";
+import { CodeBlockView } from "./code-block-view";
+import { lowlight } from "@/lib/code-languages";
 import { insertFilesAsAttachments } from "@/lib/images";
 import { registerActiveEditor } from "@/lib/attachments/refs";
 import { useUIStore } from "@/stores/use-ui-store";
@@ -39,6 +42,13 @@ function pickImageFiles(
   return Array.from(list).filter((f) => f.type.startsWith("image/"));
 }
 
+/** 代码块：lowlight 高亮 + 自定义 NodeView（语言下拉/复制按钮） */
+const CodeBlock = CodeBlockLowlight.extend({
+  addNodeView() {
+    return ReactNodeViewRenderer(CodeBlockView);
+  },
+});
+
 export function TipTapEditor({
   content,
   onChange,
@@ -55,7 +65,10 @@ export function TipTapEditor({
     extensions: [
       StarterKit.configure({
         heading: { levels: [1, 2, 3] },
+        // 关闭内置 codeBlock，换用下方 lowlight 版（同名扩展不能重复注册）
+        codeBlock: false,
       }),
+      CodeBlock.configure({ lowlight, defaultLanguage: "plaintext" }),
       Placeholder.configure({ placeholder }),
       MarkdownInlineShortcuts,
       Markdown.configure({

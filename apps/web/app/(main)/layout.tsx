@@ -4,8 +4,10 @@ import { Header } from "@/components/layout/header";
 import { RequireAuth } from "@/components/layout/require-auth";
 import { SidebarContent } from "@/components/layout/sidebar";
 import { Toaster } from "@/components/common/toaster";
+import { CommandPalette } from "@/components/command-palette";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { useNoteActions } from "@/hooks/use-note-actions";
+import { useHotkeys } from "@/hooks/use-hotkeys";
 import { useUIStore } from "@/stores/use-ui-store";
 
 /**
@@ -22,6 +24,8 @@ export default function MainLayout({
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   const setSidebarOpen = useUIStore((s) => s.setSidebarOpen);
   const { createNote } = useNoteActions();
+  // 全局快捷键（桌面端）：Ctrl+K/N/F/S/E、Ctrl+/
+  useHotkeys();
 
   return (
     <RequireAuth>
@@ -48,6 +52,7 @@ export default function MainLayout({
         </div>
 
         <Toaster />
+        <CommandPalette />
       </div>
     </RequireAuth>
   );

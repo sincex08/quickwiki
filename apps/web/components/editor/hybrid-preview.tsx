@@ -1,22 +1,117 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
+import { Check, Copy } from "lucide-react";
 import {
   splitMarkdownBlocks,
   joinMarkdownBlocks,
 } from "@/lib/markdown-blocks";
+import { extractHeadings, headingAnchor, type HeadingItem } from "@/lib/headings";
 import { MarkdownImg } from "./markdown-img";
 import { noteUrlTransform } from "./url-transform";
 import { cn } from "@/lib/utils";
 
-/** 协议引用 / 外链 / 存量 data URL 统一解析渲染 */
+/** 提取 React 子节点中的纯文本（标题锚点要用原始文本，两侧必须一致） */
+function childrenToText(children: ReactNode): string {
+  if (typeof children !== "object" || children === null) return String(children ?? "");
+  if (!Array.isArray(children)) {
+    // 单个元素/字符串
+    if (typeof children === "string" || typeof children === "number") return String(children);
+    const props = (children as { props?: { children?: ReactNode } }).props;
+    return childrenToText(props?.children);
+  }
+  return children.map((c) => childrenToText(c as ReactNode)).join("");
+}
+
+/** 标题渲染：写入稳定锚点 id，[toc] 与大纲跳转依赖它 */
+function headingRenderer(Tag: "h1" | "h2" | "h3") {
+  return function HeadingAnchor(props: { children?: ReactNode }) {
+    const id = headingAnchor(childrenToText(props.children).trim());
+    return <Tag id={id}>{props.children}</Tag>;
+  };
+}
+
+/** 代码块预览：右上角悬浮复制按钮 */
+function PreWithCopy({
+  children,
+  node: _node,
+  ...rest
+}: React.HTMLAttributes<HTMLPreElement> & { node?: unknown }) {
+  const ref = useRef<HTMLPreElement>(null);
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="group/pre relative">
+      <button
+        type="button"
+        title="复制代码"
+        onClick={async () => {
+          try {
+            await navigator.clipboard.writeText(ref.current?.textContent ?? "");
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          } catch {
+            // 剪贴板不可用：静默失败
+          }
+        }}
+        className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-md border bg-background px-1.5 py-0.5 text-xs text-muted-foreground transition-opacity hover:text-foreground lg:opacity-0 lg:group-hover/pre:opacity-100"
+      >
+        {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+        {copied ? "已复制" : "复制"}
+      </button>
+      <pre ref={ref} {...rest}>
+        {children}
+      </pre>
+    </div>
+  );
+}
+
+/** 协议引用 / 外链 / 存量 data URL 统一解析渲染 + 代码高亮 + 标题锚点 */
 const markdownComponents = {
   img: (props: { src?: string; alt?: string }) => (
     <MarkdownImg src={props.src} alt={props.alt} />
   ),
+  h1: headingRenderer("h1"),
+  h2: headingRenderer("h2"),
+  h3: headingRenderer("h3"),
+  pre: PreWithCopy,
 };
+
+/** [toc] 块：渲染全文档标题目录 */
+function TocBlock({ headings }: { headings: HeadingItem[] }) {
+  if (headings.length === 0) {
+    return (
+      <p className="my-3 rounded-lg border border-dashed px-4 py-3 text-sm text-muted-foreground">
+        [toc]：文中还没有标题（# 开头），加入标题后此处会生成目录。
+      </p>
+    );
+  }
+  return (
+    <nav className="my-3 rounded-lg border bg-muted/30 px-4 py-3">
+      <p className="mb-1.5 text-xs font-medium text-muted-foreground">目录</p>
+      <ul className="space-y-1 text-sm">
+        {headings.map((h, i) => (
+          <li key={i} style={{ paddingLeft: (h.level - 1) * 16 }}>
+            <a
+              href={`#${headingAnchor(h.text)}`}
+              onClick={(e) => {
+                e.preventDefault();
+                document
+                  .getElementById(headingAnchor(h.text))
+                  ?.scrollIntoView({ behavior: "smooth", block: "start" });
+              }}
+              className="text-foreground/80 transition-colors hover:text-primary hover:underline"
+            >
+              {h.text}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  );
+}
 
 export interface HybridPreviewProps {
   /** 原始 Markdown */
@@ -65,6 +160,10 @@ export function HybridPreview({
 
   const cancel = () => setEditingIndex(null);
 
+  // [toc] 与大纲的数据源：以本地 blocks 为准（提交后与 content 短暂不一致属预期）
+  const liveMarkdown = useMemo(() => joinMarkdownBlocks(blocks), [blocks]);
+  const headings = useMemo(() => extractHeadings(liveMarkdown), [liveMarkdown]);
+
   return (
     <div
       className={cn(
@@ -98,6 +197,10 @@ export function HybridPreview({
             aria-label="块源码编辑"
             className="my-1 w-full resize-none rounded-md border border-primary/50 bg-background p-2 font-mono text-sm leading-relaxed outline-none ring-2 ring-primary/20"
           />
+        ) : source.trim().toLowerCase() === "[toc]" ? (
+          <div key={i} className="-mx-2 px-2">
+            <TocBlock headings={headings} />
+          </div>
         ) : editable ? (
           <div
             key={i}
@@ -115,6 +218,7 @@ export function HybridPreview({
           >
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
+              rehypePlugins={[rehypeHighlight]}
               urlTransform={noteUrlTransform}
               components={markdownComponents}
             >
@@ -125,6 +229,7 @@ export function HybridPreview({
           <div key={i} className="-mx-2 px-2">
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
+              rehypePlugins={[rehypeHighlight]}
               urlTransform={noteUrlTransform}
               components={markdownComponents}
             >
