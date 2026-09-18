@@ -90,6 +90,41 @@ export function useNoteDrag(
     }
   }, []);
 
+  /**
+   * 立即禁止文本选择与长按菜单。
+   *
+   * 触摸长按要等 ~400ms 才进入拖动，但浏览器在等待期间会抢先触发原生长按行为
+   * （Android Chrome 的文本选择 + 复制菜单、iOS Safari 的 callout），等 activate
+   * 再设 user-select / 拦 contextmenu 就晚了 —— 菜单已经盖在拖动上。故在
+   * pointerdown 立即 arm：body 与行都 user-select:none + webkit 前缀 + capture
+   * 阶段拦 contextmenu。touch-action 不在这里设（会阻止列表滚动），留到 activate
+   * 进入拖动后再锁。
+   */
+  const armTextGuard = useCallback(() => {
+    document.body.style.userSelect = "none";
+    document.addEventListener("contextmenu", preventContextMenu, {
+      capture: true,
+    });
+    if (rowElRef.current) {
+      rowElRef.current.style.setProperty("user-select", "none");
+      rowElRef.current.style.setProperty("-webkit-user-select", "none");
+      rowElRef.current.style.setProperty("-webkit-touch-callout", "none");
+    }
+  }, [preventContextMenu]);
+
+  /** 恢复文本选择与长按菜单（拖动取消 / 未激活松手 / reset） */
+  const disarmTextGuard = useCallback(() => {
+    document.body.style.userSelect = "";
+    document.removeEventListener("contextmenu", preventContextMenu, {
+      capture: true,
+    });
+    if (rowElRef.current) {
+      rowElRef.current.style.removeProperty("user-select");
+      rowElRef.current.style.removeProperty("-webkit-user-select");
+      rowElRef.current.style.removeProperty("-webkit-touch-callout");
+    }
+  }, [preventContextMenu]);
+
   const reset = useCallback(() => {
     clearLongPress();
     pendingRef.current = null;
@@ -98,28 +133,22 @@ export function useNoteDrag(
     setDraggingId(null);
     setPressedId(null);
     setDropTarget(null);
-    document.body.style.userSelect = "";
+    disarmTextGuard();
     document.body.style.cursor = "";
     if (rowElRef.current) {
       rowElRef.current.style.touchAction = "";
       rowElRef.current = null;
     }
-    document.removeEventListener("contextmenu", preventContextMenu, {
-      capture: true,
-    });
-  }, [clearLongPress, preventContextMenu]);
+  }, [clearLongPress, disarmTextGuard]);
 
   /** 进入拖动状态（鼠标位移达标 / 触摸长按到点） */
   const activate = useCallback((pending: Pending) => {
     activeRef.current = { ...pending };
     setDraggingId(pending.id);
-    document.body.style.userSelect = "none";
     document.body.style.cursor = "grabbing";
     if (rowElRef.current) rowElRef.current.style.touchAction = "none";
-    document.addEventListener("contextmenu", preventContextMenu, {
-      capture: true,
-    });
-  }, [preventContextMenu]);
+    // user-select / contextmenu 已在 armTextGuard（pointerdown 时）设好
+  }, []);
 
   /** 指针下的滚动容器：取「包含指针」且可见的那个（隐藏的侧栏/抽屉不算） */
   const findScroller = (x: number, y: number): HTMLElement | null => {
@@ -204,6 +233,9 @@ export function useNoteDrag(
       setPressedId(note.id);
 
       if (pending.pointerType === "touch" || pending.pointerType === "pen") {
+        // 立即 arm 文本保护：长按 400ms 期间浏览器会抢先触发原生长按菜单，
+        // 等 activate 再设 user-select / 拦 contextmenu 就晚了（菜单已盖在拖动上）
+        armTextGuard();
         clearLongPress();
         longPressRef.current = setTimeout(() => {
           longPressRef.current = null;
@@ -219,7 +251,7 @@ export function useNoteDrag(
         }, LONG_PRESS_MS);
       }
     },
-    [activate, clearLongPress]
+    [activate, armTextGuard, clearLongPress]
   );
 
   useEffect(() => {
@@ -237,6 +269,7 @@ export function useNoteDrag(
             pendingRef.current = null;
             rowElRef.current = null;
             setPressedId(null);
+            disarmTextGuard();
           }
           return;
         }
@@ -286,6 +319,7 @@ export function useNoteDrag(
       pendingRef.current = null;
       rowElRef.current = null;
       setPressedId(null);
+      disarmTextGuard();
     };
 
     const onKey = (e: KeyboardEvent) => {
@@ -304,7 +338,7 @@ export function useNoteDrag(
       window.removeEventListener("touchmove", onTouchMove);
       window.removeEventListener("keydown", onKey);
     };
-  }, [activate, clearLongPress, commit, reset, resolveTarget]);
+  }, [activate, clearLongPress, commit, disarmTextGuard, reset, resolveTarget]);
 
   // 卸载时别把 body / 行的样式留在拖拽态
   useEffect(() => () => reset(), [reset]);

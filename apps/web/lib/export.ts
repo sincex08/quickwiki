@@ -139,7 +139,7 @@ async function extractNoteImages(
   // 2) 存量 base64 data URL（兼容未被附件库覆盖的旧数据）
   result = result.replace(
     DATA_IMG_RE,
-    (match, alt: string, mimeSub: string, payload: string) => {
+    (_match, alt: string, mimeSub: string, payload: string) => {
       const cached = saved.get(payload);
       if (cached) return `![${alt}](${cached})`;
 

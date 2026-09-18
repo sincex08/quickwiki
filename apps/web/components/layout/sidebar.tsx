@@ -98,7 +98,7 @@ interface NoteRowActions {
   onDeleteNote: (note: NoteIndexItem) => void;
   /** 上移 / 下移一位（菜单微调；手机与键盘用户的主路径） */
   onMoveNote: (id: string, direction: -1 | 1) => void;
-  /** 恢复该容器的默认顺序（置顶 + 更新时间倒序） */
+  /** 恢复该容器的默认顺序（置顶 + 创建时间升序，早创建的在前） */
   onResetOrder: (notebookId: string | null) => void;
   /** 已按下、等待进入拖动的笔记（按压反馈） */
   pressedId: string | null;
@@ -580,7 +580,7 @@ export function SidebarContent() {
     [noteIndex, tagFilter]
   );
 
-  // 按笔记本分组；索引本身已按「置顶优先 + 更新时间倒序」排好，分组保持顺序。
+  // 按笔记本分组；索引本身已按「置顶优先 + 创建时间升序」排好，分组保持顺序。
   // 节点的笔记角标直接取这些分组数组的长度：角标与树下实际列出的条目
   // 永远同源同帧，不会出现「数字对不上」或新增/删除后不跳动。
   const { notesByNotebook, uncategorizedNotes } = useMemo(() => {

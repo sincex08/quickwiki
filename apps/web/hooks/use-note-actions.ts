@@ -100,7 +100,7 @@ export function useNoteActions() {
       await noteRepo.update(id, { pinned: false });
       return;
     }
-    // 置顶 = 移到容器最前：手动顺序的容器里 pinned 不决定位置，需一并重排编号
+    // 置顶 = 移到容器最前：pinned 永远最前，这里再重排编号，保证取消置顶后也留在最前
     await noteRepo.pinToTop(id);
   }, []);
 
@@ -125,7 +125,7 @@ export function useNoteActions() {
     return noteRepo.moveBy(id, direction);
   }, []);
 
-  /** 恢复该容器的默认顺序（置顶 + 更新时间倒序） */
+  /** 恢复该容器的默认顺序（置顶 + 创建时间升序，早创建的在前） */
   const resetOrder = useCallback(async (notebookId: string | null) => {
     await noteRepo.resetOrder(notebookId);
   }, []);

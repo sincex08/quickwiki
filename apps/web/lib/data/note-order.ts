@@ -4,12 +4,13 @@ import type { Note } from "@quickwiki/shared";
  * 笔记手动顺序的纯计算部分（不依赖 Dexie，便于单测）。
  *
  * 模型：**容器** = 一个笔记本或「未分类」，各自独立维护顺序。
- * - 容器内全部 `sortOrder == null` → 未手动排序，按 `pinned` + `updatedAt` 倒序（默认行为）
+ * - 置顶（`pinned`）**永远排最前**，优先级高于手动顺序（两种模式统一）
+ * - 容器内全部 `sortOrder == null` → 未手动排序，其余按创建时间升序（早创建的在前）
  * - 容器内存在任意一条已编号 → 该容器进入「手动顺序」模式，
- *   顺序完全由 `sortOrder` 升序决定（`pinned` 不再影响位置，只作为可见标记）
+ *   其余顺序由 `sortOrder` 升序决定
  *
  * 跨容器的混合视图（历史上的「全部笔记」列表、搜索结果）不存在全局手动顺序：
- * 按容器**分块**呈现，块内遵守各自顺序，块间按块内最近更新时间倒序。
+ * 按容器**分块**呈现，块内遵守各自顺序，块间按块内最早创建时间升序。
  */
 
 /** 手动顺序的编号步长（留出插入余量，相邻交换无需整组重写） */
@@ -23,6 +24,8 @@ export interface OrderableRow {
   id: string;
   notebookId: string | null;
   pinned: boolean;
+  /** 创建时间：未手动排序时按它倒序（编辑不刷新，顺序稳定） */
+  createdAt: number;
   updatedAt: number;
   sortOrder?: number | null;
 }
@@ -38,22 +41,26 @@ export function isManualOrder(rows: readonly OrderableRow[]): boolean {
   return rows.some((r) => r.sortOrder != null);
 }
 
-/** 容器内排序：手动模式看 sortOrder，否则置顶优先 + 更新时间倒序 */
+/** 容器内排序：置顶永远最前，其次手动顺序（sortOrder）/ 创建时间升序 */
 export function compareWithinContainer(
   a: OrderableRow,
   b: OrderableRow,
   manual: boolean
 ): number {
+  // 置顶永远排最前：优先级高于手动顺序（两种模式统一）
+  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
   if (manual) {
-    // 未编号的（异常数据）排最后，用更新时间兜底
+    // 手动顺序容器：按编号（未编号的异常数据排最后，用更新时间兜底）
     const av = a.sortOrder ?? Number.POSITIVE_INFINITY;
     const bv = b.sortOrder ?? Number.POSITIVE_INFINITY;
     if (av !== bv) return av - bv;
     if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   }
-  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-  if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
+  // 未手动排序：创建时间升序（早创建的在前）。
+  // 刻意不用 updatedAt：编辑会刷新 updatedAt，导致笔记每次保存都跳到最前，
+  // 打乱阅读顺序。改用 createdAt 后顺序稳定，只在新建 / 拖拽 / 移入时变化。
+  if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
@@ -78,7 +85,7 @@ export function sortContainer<T extends OrderableRow>(rows: readonly T[]): T[] {
 }
 
 /**
- * 展示排序：容器分块 + 块内排序 + 块间按「块内最近更新时间」倒序。
+ * 展示排序：容器分块 + 块内排序 + 块间按「块内最早创建时间」升序。
  * 同一容器的笔记在结果中连续，块内顺序即用户排定的顺序。
  */
 export function sortNotesForDisplay<T extends OrderableRow>(
@@ -87,11 +94,15 @@ export function sortNotesForDisplay<T extends OrderableRow>(
   const buckets = groupByContainer(rows);
   const blocks = [...buckets.entries()].map(([key, list]) => {
     const sorted = sortContainer(list);
-    const latest = sorted.reduce((max, r) => Math.max(max, r.updatedAt), 0);
-    return { key, sorted, latest };
+    // 块间也用 createdAt 升序（与块内一致）：早创建的容器在前
+    const earliest = sorted.reduce(
+      (min, r) => Math.min(min, r.createdAt ?? Number.POSITIVE_INFINITY),
+      Number.POSITIVE_INFINITY
+    );
+    return { key, sorted, earliest };
   });
   blocks.sort((a, b) => {
-    if (a.latest !== b.latest) return b.latest - a.latest;
+    if (a.earliest !== b.earliest) return a.earliest - b.earliest;
     return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
   });
   return blocks.flatMap((b) => b.sorted);
@@ -171,6 +182,7 @@ export function toOrderable(note: Note): OrderableRow {
     id: note.id,
     notebookId: note.notebookId,
     pinned: note.pinned,
+    createdAt: note.createdAt,
     updatedAt: note.updatedAt,
     sortOrder: note.sortOrder ?? null,
   };

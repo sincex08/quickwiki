@@ -4,7 +4,7 @@
 
 - **形态**：纯静态 Web 应用（Next.js 14 `output: 'export'`），可部署到任意静态托管/CDN
 - **数据**：浏览器 IndexedDB（Dexie），内容以 **Markdown 原生存储**
-- **能力**：三模式 Markdown 编辑（所见即所得/源码/预览）、每笔记附件库（图片唯一来源 + 抽屉管理）、表格/任务清单/链接、中文全文搜索（增量索引+持久化）、笔记本（可嵌套分组，「文件夹」= 容器笔记本）/标签/置顶、**笔记手动排序（桌面拖动 / 手机长按拖动 / 菜单上移下移 / 拖到笔记本即改分类 / 恢复默认顺序）**、侧栏树状导航（笔记本→笔记，桌面双栏布局）、MD 与 ZIP 导出、PWA 离线、深色模式、响应式
+- **能力**：三模式 Markdown 编辑（所见即所得/源码/预览；手机端默认预览，预览可直接勾选任务清单）、每笔记附件库（图片唯一来源 + 抽屉管理）、表格/任务清单/链接、中文全文搜索（增量索引+持久化）、笔记本（可嵌套分组，「文件夹」= 容器笔记本）/标签/置顶（永远最前）、**笔记手动排序（桌面拖动 / 手机长按拖动 / 菜单上移下移 / 拖到笔记本即改分类 / 恢复默认顺序；未手动排序按创建时间升序）**、侧栏树状导航（笔记本→笔记，桌面双栏布局）、MD 与 ZIP 导出、PWA 离线、深色模式、响应式
 - **架构保障**：所有数据访问经由 `NoteRepository` / `NotebookRepository` 抽象层（`apps/web/lib/data/repository.ts`），UI 不直接依赖 Dexie —— 这是后续上云的切换点
 
 ## Phase 2：云端同步（多设备）—— Supabase 已上线 ✅
@@ -95,6 +95,17 @@ Repository 抽象与本地 outbox 机制可复用。
 
 ## 决策记录
 
+- **编辑器默认视图与预览交互（2026-09-18）**：
+  - **手机端（≤767px）打开笔记默认进「预览」**（读优先），桌面端默认「编辑」；
+    判定集中在 `defaultEditorMode()`（`stores/use-ui-store.ts`），`EditorPane` 在 `activeNoteId`
+    变化时调用它。用户在当前笔记里手动切过的模式保持，切换笔记回到默认。
+  - **「预览点击编辑」（`hybridEditing`）默认关闭**（此前默认开）：预览即纯阅读，点块不进编辑；
+    要改文字走「编辑」模式或头部开关（`readHybridDefault` 由 `!== "0"` 改为 `=== "1"`）。
+  - **预览视图任务清单可直接勾选 / 取消**：`HybridPreview` 的 remark-gfm checkbox 默认是
+    `disabled`（GitHub 风格只读），现用自定义 `components.input` 覆盖为可点击，点击翻转块内
+    第 n 个 `- [ ]` / `- [x]`（靠 block 容器 `data-block-index` + checkbox DOM 序号定位，
+    渲染顺序即源码顺序）并回写 Markdown；checkbox 的 `onClick` 必须 `stopPropagation`，
+    否则会冒泡触发「点击块进入编辑」。
 - **为什么深链同步（`?note=<id>`）不用 next/navigation**：`router.replace` 是一次真实的路由导航
   （重新取 RSC payload + 页面级 Suspense 回退到空白），打开/新建笔记时会「整页闪一下」；
   改成 `history.replaceState` 直接读写地址栏：刷新、分享链接、恢复选中语义不变，零重渲染。
@@ -104,8 +115,11 @@ Repository 抽象与本地 outbox 机制可复用。
   标签过滤时也随之收窄，新增/删除/移动同帧更新。
 - **笔记手动顺序 = 每容器独立，且不刷新 `updatedAt`**：顺序存 `Note.sortOrder`（容器内越小越靠前，
   步长 1024；见 `lib/data/note-order.ts`）。**容器 = 单个笔记本或未分类**，各自独立判定：
-  容器内存在任意一条已编号即进入「手动模式」，此时顺序完全由 `sortOrder` 决定，
-  `pinned` 只作可见标记（「置顶」实现为「移到最前」）。
+  容器内存在任意一条已编号即进入「手动模式」，其余顺序由 `sortOrder` 决定。
+  **「置顶」（`pinned`）永远排最前，优先级高于手动顺序**（2026-09-18 起；此前手动容器里
+  `pinned` 只作可见标记，只有「置顶」动作当场把它挪到最前）。未手动排序的容器其余按
+  **创建时间升序（早创建的在前）**——用 `createdAt` 而非 `updatedAt`：编辑会刷新 `updatedAt`，
+  会让笔记每次保存都跳到最前、打乱阅读顺序。
   - 排序**刻意不刷新 `updatedAt`**：否则列表上的「x 分钟前」会跳到「刚刚」，
     且「恢复默认顺序」后所有笔记时间塌缩到同一刻、默认排序退化成按 id 排序。
     同步不需要它推进（push 走乐观锁条件更新 + 成功后写回 `syncVersion`），
@@ -117,8 +131,12 @@ Repository 抽象与本地 outbox 机制可复用。
   - 拖动交互 `components/layout/use-note-drag.tsx`（侧栏树与手机卡片列表共用同一套）：
     **鼠标**位移超过 4px 即进入拖动；**触摸**按住约 400ms 才进入（长按期间手指移动超过 8px
     视为「用户在滚列表」直接放弃），进入后 `preventDefault` 掉 `touchmove` 并给该行锁
-    `touch-action: none`，否则页面会跟着手指滚；同时压掉长按呼出的右键菜单，结束时吞掉那次
-    click（避免拖完顺手打开笔记）。手机的卡片左滑与长按拖动互斥。
+    `touch-action: none`，否则页面会跟着手指滚。
+    **文本保护必须在 pointerdown 就 arm**（2026-09-18 修）：body 与行都 `user-select: none` +
+    `-webkit-user-select` / `-webkit-touch-callout` 前缀 + capture 拦 `contextmenu`。不能等 400ms
+    长按到点再设——浏览器在等待期间就会呼出 Android 文本选择菜单 / iOS callout，盖住拖动
+    （`touch-action: none` 仍只在 activate 时锁，pointerdown 就锁会阻止列表滚动）。
+    结束时吞掉那次 click（避免拖完顺手打开笔记）。手机的卡片左滑与长按拖动互斥。
     降级路径：菜单里的「上移 / 下移」在两端都可用，不依赖拖拽。
 - **「全部笔记」维度已移除、笔记本管理页已删除（2026-09-16）**：
   - 侧栏不再有「全部笔记」入口及其混合列表 —— 列表始终按笔记本（或「未分类」）展示。

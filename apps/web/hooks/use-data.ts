@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   notebookRepo,
   noteRepo,
@@ -64,9 +64,12 @@ export function useNotes(filters: NotesFilters) {
 
   const filtersKey = `${filters.notebookId ?? ""}|${filters.tag ?? ""}`;
 
-  // 切换过滤器时重置分页
+  // 切换过滤器时重置分页 + 进入 loading：切换瞬间 items 还是上一次的结果，
+  // 不重置 loading 会渲染旧笔记本的卡片或 EmptyState「还没有笔记」，直到新数据
+  // 回来才切换——表现为「有时卡片有时无笔记」。重置后显示 skeleton 过渡。
   useEffect(() => {
     setLimit(DEFAULT_PAGE_SIZE);
+    setLoading(true);
   }, [filtersKey]);
 
   useEffect(() => {

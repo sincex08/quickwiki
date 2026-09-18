@@ -51,7 +51,6 @@ export function CommandPalette() {
   const open = useUIStore((s) => s.commandPaletteOpen);
   const setOpen = useUIStore((s) => s.setCommandPaletteOpen);
   const setHelpOpen = useUIStore((s) => s.setHelpOpen);
-  const editorMode = useUIStore((s) => s.editorMode);
   const setEditorMode = useUIStore((s) => s.setEditorMode);
   const openNote = useUIStore((s) => s.openNote);
   const setNotebookFilter = useUIStore((s) => s.setNotebookFilter);

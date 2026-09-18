@@ -1,6 +1,13 @@
 "use client";
 
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  type InputHTMLAttributes,
+  type ReactNode,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -164,6 +171,77 @@ export function HybridPreview({
   const liveMarkdown = useMemo(() => joinMarkdownBlocks(blocks), [blocks]);
   const headings = useMemo(() => extractHeadings(liveMarkdown), [liveMarkdown]);
 
+  /**
+   * 预览里直接勾选 / 取消任务清单：把块内第 taskIndex 个任务标记翻转后写回 Markdown。
+   * remark-gfm 默认把 checkbox 渲染成 disabled，这里用自定义 input 覆盖为可点击，
+   * 并借「渲染顺序 = 源码顺序」按 DOM 序号定位到具体那一行。
+   */
+  const toggleTask = useCallback(
+    (blockIndex: number, taskIndex: number) => {
+      if (blockIndex < 0 || taskIndex < 0) return;
+      setBlocks((prev) => {
+        if (blockIndex >= prev.length) return prev;
+        const lines = prev[blockIndex].split("\n");
+        let seen = -1;
+        for (let li = 0; li < lines.length; li++) {
+          if (!/^\s*[-*+]\s+\[[ xX]\]/.test(lines[li])) continue;
+          seen += 1;
+          if (seen !== taskIndex) continue;
+          lines[li] = lines[li].replace(
+            /^(\s*[-*+]\s+\[)([ xX])(\])/,
+            (_m, p1: string, p2: string, p3: string) =>
+              `${p1}${p2.trim() === "" ? "x" : " "}${p3}`
+          );
+          break;
+        }
+        const next = [...prev];
+        next[blockIndex] = lines.join("\n");
+        const cleaned = next
+          .map((b) => b.replace(/^\s+/, "").replace(/\s+$/, ""))
+          .filter((b) => b !== "");
+        onChange(joinMarkdownBlocks(cleaned));
+        return next;
+      });
+    },
+    [onChange]
+  );
+
+  /** ReactMarkdown 组件表：默认渲染器 + 「可点击的任务清单 checkbox」 */
+  const components = useMemo(
+    () => ({
+      ...markdownComponents,
+      input: ({
+        node: _node,
+        ...props
+      }: InputHTMLAttributes<HTMLInputElement> & { node?: unknown }) => {
+        if (props.type !== "checkbox") return <input {...props} />;
+        return (
+          <input
+            type="checkbox"
+            checked={Boolean(props.checked)}
+            onChange={(e) => {
+              const input = e.currentTarget;
+              const container = input.closest<HTMLElement>("[data-block-index]");
+              const blockIndex = Number(container?.dataset.blockIndex ?? "-1");
+              const boxes = container
+                ? Array.from(
+                    container.querySelectorAll<HTMLInputElement>(
+                      'input[type="checkbox"]'
+                    )
+                  )
+                : [];
+              toggleTask(blockIndex, boxes.indexOf(input));
+            }}
+            // 勾选任务不应冒泡触发「点击块进入编辑」
+            onClick={(e) => e.stopPropagation()}
+            className="mr-1.5 cursor-pointer align-middle accent-primary"
+          />
+        );
+      },
+    }),
+    [toggleTask]
+  );
+
   return (
     <div
       className={cn(
@@ -204,6 +282,7 @@ export function HybridPreview({
         ) : editable ? (
           <div
             key={i}
+            data-block-index={i}
             role="button"
             tabIndex={0}
             title="点击编辑此块的 Markdown 源码"
@@ -220,18 +299,18 @@ export function HybridPreview({
               remarkPlugins={[remarkGfm]}
               rehypePlugins={[rehypeHighlight]}
               urlTransform={noteUrlTransform}
-              components={markdownComponents}
+              components={components}
             >
               {source}
             </ReactMarkdown>
           </div>
         ) : (
-          <div key={i} className="-mx-2 px-2">
+          <div key={i} data-block-index={i} className="-mx-2 px-2">
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               rehypePlugins={[rehypeHighlight]}
               urlTransform={noteUrlTransform}
-              components={markdownComponents}
+              components={components}
             >
               {source}
             </ReactMarkdown>

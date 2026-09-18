@@ -37,7 +37,11 @@ import { TagEditor } from "@/components/notes/tag-editor";
 import { AttachmentDrawer } from "@/components/attachments/attachment-drawer";
 import { useNote, useNotebooks, useTags } from "@/hooks/use-data";
 import { useNoteActions } from "@/hooks/use-note-actions";
-import { useUIStore, type EditorMode } from "@/stores/use-ui-store";
+import {
+  useUIStore,
+  defaultEditorMode,
+  type EditorMode,
+} from "@/stores/use-ui-store";
 import { useToastStore } from "@/stores/use-toast-store";
 import { noteRepo } from "@/lib/data/repository";
 import { releaseAllObjectUrls } from "@/lib/attachments/resolve";
@@ -153,7 +157,7 @@ export function EditorPane() {
     []
   );
 
-  // 切换笔记或卸载时：立即落盘未保存的内容与标题草稿、回到编辑模式、释放附件 objectURL
+  // 切换笔记或卸载时：立即落盘未保存的内容与标题草稿、释放附件 objectURL
   useEffect(() => {
     return () => {
       debouncedSave.cancel();
@@ -161,12 +165,18 @@ export function EditorPane() {
       // 标题防抖同样取消并按发起时的 id flush：既不丢失最后一笔，也不等迟到回调
       debouncedTitleSave.cancel();
       flushTitlePending();
-      setEditorMode("edit");
       releaseAllObjectUrls();
       contentOverrideRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeNoteId]);
+
+  // 打开 / 切换笔记时按视口设默认模式：手机端优先「预览」（读优先），桌面端「编辑」。
+  // 用户手动切换的模式在当前笔记内保持，切换笔记时回到默认。
+  useEffect(() => {
+    if (!activeNoteId) return;
+    setEditorMode(defaultEditorMode());
+  }, [activeNoteId, setEditorMode]);
 
   // 全局快捷键 Ctrl/Cmd+S：立即 flush 防抖中的正文与标题草稿（不丢最后一笔）
   useEffect(() => {

@@ -9,12 +9,31 @@ const LIST_TITLE_ONLY_KEY = "quickwiki.noteListTitleOnly";
 const TREE_EXPANDED_KEY = "quickwiki.treeExpanded";
 const NOTEBOOK_FILTER_KEY = "quickwiki.notebookFilter";
 
+/** 「预览点击编辑」开关默认关闭（从未设置过时为 false） */
 function readHybridDefault(): boolean {
-  if (typeof window === "undefined") return true;
+  if (typeof window === "undefined") return false;
   try {
-    return window.localStorage.getItem(HYBRID_STORAGE_KEY) !== "0";
+    return window.localStorage.getItem(HYBRID_STORAGE_KEY) === "1";
   } catch {
-    return true;
+    return false;
+  }
+}
+
+/** 移动端断点（与 Tailwind md 对齐）：≤767px 视为手机 */
+const MOBILE_MAX_WIDTH = 767;
+
+/**
+ * 打开 / 切换笔记时的默认编辑器模式：手机端优先「预览」（读优先），
+ * 桌面端「编辑」（写优先）。服务端渲染 / 异常时兜底为 "edit"。
+ */
+export function defaultEditorMode(): EditorMode {
+  if (typeof window === "undefined") return "edit";
+  try {
+    return window.matchMedia(`(max-width: ${MOBILE_MAX_WIDTH}px)`).matches
+      ? "preview"
+      : "edit";
+  } catch {
+    return "edit";
   }
 }
 

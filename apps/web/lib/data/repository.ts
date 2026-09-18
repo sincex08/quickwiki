@@ -60,6 +60,8 @@ export interface NoteIndexItem {
   notebookId: string | null;
   tags: string[];
   pinned: boolean;
+  /** 创建时间：排序用（与 OrderableRow 对齐） */
+  createdAt: number;
   updatedAt: number;
   /** 手动顺序，见 Note.sortOrder */
   sortOrder: number | null;
@@ -75,7 +77,7 @@ export interface NoteRepository {
   /** 按输入顺序返回（用于保持搜索排名顺序） */
   listByIds(ids: string[]): Promise<Note[]>;
   list(filters?: ListFilters): Promise<Paginated<Note>>;
-  /** 侧栏树索引：全量笔记的轻量行（不含正文），容器内按手动顺序/更新时间排序 */
+  /** 侧栏树索引：全量笔记的轻量行（不含正文），容器内按手动顺序/创建时间排序 */
   listIndex(): Promise<NoteIndexItem[]>;
   /** 全量与分笔记本的笔记数量（侧边栏角标） */
   counts(): Promise<NoteCounts>;
@@ -85,11 +87,11 @@ export interface NoteRepository {
     notebookId: string | null,
     index: number
   ): Promise<void>;
-  /** 恢复默认顺序：清空容器内全部 sortOrder（回到 置顶 + 更新时间倒序） */
+  /** 恢复默认顺序：清空容器内全部 sortOrder（回到 置顶 + 创建时间升序） */
   resetOrder(notebookId: string | null): Promise<void>;
   /** 移动笔记到指定笔记本（null = 未分类）；落入手动顺序的容器时置于最前 */
   moveToNotebook(id: string, notebookId: string | null): Promise<void>;
-  /** 置顶并置于容器最前（手动顺序容器里 pinned 不决定位置，故需一并重排） */
+  /** 置顶并置于容器最前（pinned 永远最前，这里一并重排编号使取消置顶后仍留在最前） */
   pinToTop(id: string): Promise<void>;
   /** 相对移动一位（上移 / 下移）；已在边界返回 false（UI 据此禁用菜单项） */
   moveBy(id: string, direction: -1 | 1): Promise<boolean>;
@@ -290,7 +292,7 @@ class IndexedDBNoteRepository implements NoteRepository {
     }
 
     // 容器（笔记本 / 未分类）内排序：已手动排序的容器看 sortOrder，
-    // 其余仍按 置顶优先 + 更新时间倒序（见 note-order.ts）
+    // 其余仍按 置顶优先 + 创建时间升序（见 note-order.ts）
     rows = sortNotesForDisplay(rows);
 
     const total = rows.length;
@@ -310,10 +312,11 @@ class IndexedDBNoteRepository implements NoteRepository {
       notebookId: n.notebookId,
       tags: n.tags,
       pinned: n.pinned,
+      createdAt: n.createdAt,
       updatedAt: n.updatedAt,
       sortOrder: n.sortOrder ?? null,
     }));
-    // 与 list() 相同的排序约定：容器内按手动顺序，未手动排序的按 置顶 + 时间倒序
+    // 与 list() 相同的排序约定：容器内按手动顺序，未手动排序的按 置顶 + 创建时间升序
     return sortNotesForDisplay(items);
   }
 
@@ -415,7 +418,7 @@ class IndexedDBNoteRepository implements NoteRepository {
       emitChange("notes", { type: "update", ids: [id] });
       return;
     }
-    // 手动顺序容器：pinned 不决定位置，必须显式把编号挪到最前
+    // 手动顺序容器：pinned 已保证最前，这里显式把编号也挪到最前，取消置顶后仍留最前
     const rest = sortContainer(rows)
       .map((r) => r.id)
       .filter((x) => x !== id);

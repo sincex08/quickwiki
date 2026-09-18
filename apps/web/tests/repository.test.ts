@@ -116,7 +116,7 @@ describe("counts", () => {
 });
 
 describe("listIndex", () => {
-  it("返回轻量行：置顶优先 + 更新时间倒序，不含正文", async () => {
+  it("返回轻量行：置顶优先 + 创建时间升序，不含正文", async () => {
     const a = await noteRepo.create({ title: "a" });
     const b = await noteRepo.create({ title: "b" });
     await noteRepo.update(b, { pinned: true });
@@ -249,7 +249,7 @@ describe("手动顺序", () => {
     );
   });
 
-  it("pinToTop：手动顺序容器里置顶 = 移到最前（pinned 不决定位置）", async () => {
+  it("pinToTop：手动顺序容器里置顶 = 移到最前", async () => {
     const a = await noteRepo.create({ notebookId: "nb1" });
     const b = await noteRepo.create({ notebookId: "nb1" });
     await noteRepo.moveToPosition(a, "nb1", 1); // a 落到 b 之后
