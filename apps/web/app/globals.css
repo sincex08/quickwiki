@@ -272,9 +272,11 @@
   @apply flex items-start gap-2;
 }
 .md-preview ul.contains-task-list input[type="checkbox"] {
-  @apply mt-1.5;
+  @apply mt-1.5 cursor-pointer;
   accent-color: hsl(var(--primary));
-  pointer-events: none; /* 勾选请点块编辑源码 */
+  /* 2026-09-18：预览视图支持直接勾选/取消任务清单（components.input 已接管渲染），
+     旧设计这里的 pointer-events:none 是「点块编辑源码」时代的禁用逻辑，已移除；
+     「勾选不进块编辑」由 HybridPreview 块容器 onClick 检查 target tagName 处理。 */
 }
 .md-preview blockquote {
   @apply border-l-4 border-border pl-4 my-2 text-muted-foreground italic;

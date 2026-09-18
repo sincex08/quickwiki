@@ -232,8 +232,10 @@ export function HybridPreview({
                 : [];
               toggleTask(blockIndex, boxes.indexOf(input));
             }}
-            // 勾选任务不应冒泡触发「点击块进入编辑」
-            onClick={(e) => e.stopPropagation()}
+            // 注意：不要在这里 stopPropagation —— React 对 checkbox 的 onChange
+            // 就是从原生 click 派发的（ChangeEventPlugin），拦掉它 onChange
+            // 永远不会触发（实测复现过）。「勾选不进块编辑」由块容器的
+            // onClick 检查 target tagName 来做，见下方 editable 分支。
             className="mr-1.5 cursor-pointer align-middle accent-primary"
           />
         );
@@ -286,7 +288,12 @@ export function HybridPreview({
             role="button"
             tabIndex={0}
             title="点击编辑此块的 Markdown 源码"
-            onClick={() => startEdit(i)}
+            onClick={(e) => {
+              // 任务清单的勾选点击（input）不进入块编辑；
+              // 不能用 checkbox 上的 stopPropagation，那会连带杀死 onChange
+              if ((e.target as HTMLElement).tagName === "INPUT") return;
+              startEdit(i);
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
