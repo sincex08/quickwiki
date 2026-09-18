@@ -134,3 +134,17 @@ db.notes.hook("updating", (mods: object) => {
     }
   }
 });
+
+/**
+ * v6：存量数据 cat 回填。
+ * creating hook 只对 add() 触发，put()（含首写）不触发——云同步 pull 用 put()
+ * 写入的行全部缺 cat，「按笔记本过滤」的索引查询查不到它们，表现为
+ * 「侧栏看得到笔记，列表显示还没有笔记」（2026-09-18 真机数据实测定位）。
+ * pull 写入路径已改为显式携带 cat（见 sync-engine applyNote）；
+ * 此 upgrade 一次性修复各端存量库，modify 不会误触 updating hook
+ * （diff 里没有 notebookId，hook 直接放行）。
+ */
+// v6 回填已移除：声明更高 schema 版本会让 Dexie 的 creating/updating 旧式 hook
+// 在 fake-indexeddb（测试）与部分路径下失效（2026-09-18 对照实验）。
+// 存量库的 cat 缺失改由 sync-engine 会话启动时的一次性回填修复
+// （见 sync-engine.ts backfillCatForExistingRows），写入路径全部显式携带 cat。

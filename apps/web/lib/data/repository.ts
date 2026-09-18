@@ -161,6 +161,8 @@ class IndexedDBNoteRepository implements NoteRepository {
       pinned: false,
       sortOrder: isManualOrder(siblings) ? topOrderValue(siblings) : null,
     };
+    // cat 派生索引显式携带（与 pull/update 路径同口径，不依赖 hook）
+    (note as Note & { cat?: string }).cat = notebookId ?? "";
 
     await db.transaction("rw", db.notes, db.noteTags, db.tags, async () => {
       await db.notes.add(note);
@@ -187,6 +189,11 @@ class IndexedDBNoteRepository implements NoteRepository {
       await db.notes.update(id, {
         ...updates,
         ...(nextTags !== null ? { tags: nextTags } : {}),
+        // cat 派生索引显式维护：不依赖 updating hook（put/update 路径的 hook
+        // 行为跨环境不稳定，2026-09-18 实测）
+        ...(updates.notebookId !== undefined
+          ? { cat: updates.notebookId ?? "" }
+          : {}),
         updatedAt: Date.now(),
       });
 

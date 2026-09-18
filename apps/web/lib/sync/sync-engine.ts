@@ -325,6 +325,28 @@ async function enqueue(
 
 // ---------- 同步主流程 ----------
 
+/**
+ * 存量库 cat 回填（一次性/会话）：put() 不触发 Dexie 的 creating hook，
+ * 历史上 pull 写入的行缺 cat 派生字段，「按笔记本过滤」的索引查询查不到它们。
+ * 写入路径已全部显式携带 cat；此处兜底修复老用户已存在的行。
+ * modify 的 diff 不含 notebookId，不会误触 updating hook。
+ */
+let catBackfilled = false;
+async function backfillCatForExistingRows(): Promise<void> {
+  if (catBackfilled) return;
+  try {
+    await db.notes
+      .toCollection()
+      .filter((n) => (n as Note & { cat?: string }).cat === undefined)
+      .modify((n) => {
+        (n as Note & { cat?: string }).cat = n.notebookId ?? "";
+      });
+    catBackfilled = true;
+  } catch {
+    // 回填失败不阻塞同步：本轮跳过，下轮 syncNow 再试
+  }
+}
+
 export async function syncNow(): Promise<void> {
   const sb = getSupabase();
   if (!sb) {
@@ -335,6 +357,7 @@ export async function syncNow(): Promise<void> {
     setState({ status: "signed-out" });
     return;
   }
+  await backfillCatForExistingRows();
   setState({ status: "syncing", error: null });
   try {
     // 单条 push 失败不抛出（不阻塞队列、不跳过 pull），错误汇总上报
@@ -1118,6 +1141,10 @@ async function applyRemoteNote(row: RemoteNote, force = false): Promise<void> {
       sortOrder: resolveRemoteSortOrder(row.sort_order, local?.sortOrder),
       syncVersion: row.version,
     };
+    // cat 派生索引必须显式携带：Dexie 的 creating hook 只在 add() 时触发，
+    // put()（含首写）不触发——漏掉它，拉取的行对 where("cat") 过滤隐形，
+    // 表现为「侧栏看得到笔记，列表显示还没有笔记」（2026-09-18 实测定位）
+    (note as Note & { cat?: string }).cat = row.notebook_id ?? "";
     await db.transaction("rw", db.notes, db.noteTags, db.tags, async () => {
       await db.notes.put(note);
       // 同步路径与本地 CRUD 走同一套标签维护：此前远端应用不写
