@@ -70,6 +70,16 @@ export function useNoteActions() {
     [activeNoteId, notebookFilter, openNote, router]
   );
 
+  /**
+   * 顶部「新建笔记」的落点解析：与 createNote 共用同一套优先级。
+   * 供二次确认弹窗展示「将建到哪个笔记本」——确认后再按这个结果显式创建，
+   * 避免用户在弹窗里看到的落点与真正落点不一致（2026-09-19）。
+   */
+  const resolveNewNoteTarget = useCallback(
+    () => resolveTargetNotebook(undefined, activeNoteId, notebookFilter),
+    [activeNoteId, notebookFilter]
+  );
+
   const deleteNote = useCallback(
     async (id: string) => {
       const note = await noteRepo.findById(id);
@@ -132,6 +142,7 @@ export function useNoteActions() {
 
   return {
     createNote,
+    resolveNewNoteTarget,
     deleteNote,
     togglePin,
     moveToNotebook,

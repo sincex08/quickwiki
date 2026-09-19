@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { canSetParent, notebookRepo } from "@/lib/data/repository";
+import { buildNotebookPaths, sortNotebooksByTree } from "@/lib/notebook-path";
 import { useNotebooks } from "@/hooks/use-data";
 import { useToastStore } from "@/stores/use-toast-store";
 import type { Notebook } from "@quickwiki/shared";
@@ -70,6 +71,19 @@ export function NotebookDialog({
     }
     return notebooks.filter((nb) => !excluded.has(nb.id));
   }, [notebooks, editingId]);
+
+  /**
+   * 父级候选的展示：完整层级路径 + 树先序排列。
+   * 只显示名称时，多处同名的子笔记本无法区分；路径同时说明「它挂在谁下面」（2026-09-19）。
+   */
+  const parentPaths = useMemo(
+    () => buildNotebookPaths(notebooks),
+    [notebooks]
+  );
+  const orderedParents = useMemo(
+    () => sortNotebooksByTree(eligibleParents),
+    [eligibleParents]
+  );
 
   const submit = async () => {
     if (!name.trim()) return;
@@ -147,9 +161,9 @@ export function NotebookDialog({
               className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm outline-none focus:ring-1 focus:ring-ring"
             >
               <option value="">无（顶层）</option>
-              {eligibleParents.map((nb) => (
+              {orderedParents.map((nb) => (
                 <option key={nb.id} value={nb.id}>
-                  {nb.name}
+                  {parentPaths.get(nb.id) ?? nb.name}
                 </option>
               ))}
             </select>

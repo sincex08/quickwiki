@@ -1,13 +1,17 @@
 "use client";
 
+import { useState } from "react";
 import { Header } from "@/components/layout/header";
 import { RequireAuth } from "@/components/layout/require-auth";
 import { SidebarContent } from "@/components/layout/sidebar";
 import { Toaster } from "@/components/common/toaster";
+import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { CommandPalette } from "@/components/command-palette";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { useNotebooks } from "@/hooks/use-data";
 import { useNoteActions } from "@/hooks/use-note-actions";
 import { useHotkeys } from "@/hooks/use-hotkeys";
+import { buildNotebookPaths } from "@/lib/notebook-path";
 import { useUIStore } from "@/stores/use-ui-store";
 
 /**
@@ -23,9 +27,39 @@ export default function MainLayout({
 }) {
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   const setSidebarOpen = useUIStore((s) => s.setSidebarOpen);
-  const { createNote } = useNoteActions();
+  const { createNote, resolveNewNoteTarget } = useNoteActions();
+  const { notebooks } = useNotebooks();
   // 全局快捷键（桌面端）：Ctrl+K/N/F/S/E、Ctrl+/
   useHotkeys();
+
+  /**
+   * 顶部「新建笔记」的待确认落点。
+   * 顶部按钮的归属是推断出来的（打开的笔记 > 侧栏选中 > 未分类），用户看不见，
+   * 误落到别的笔记本正是最难发现的那种错 —— 先确认落点再创建（2026-09-19）。
+   */
+  const [pendingNewNote, setPendingNewNote] = useState<{
+    notebookId: string | null;
+  } | null>(null);
+
+  const requestNewNote = async () => {
+    const notebookId = await resolveNewNoteTarget();
+    setPendingNewNote({ notebookId });
+  };
+
+  const confirmNewNote = () => {
+    const target = pendingNewNote;
+    setPendingNewNote(null);
+    // 用弹窗里展示过的那个 id 显式创建：不再二次推断，避免「看到的落点」
+    // 与「实际落点」不一致
+    if (target) void createNote({ notebookId: target.notebookId });
+  };
+
+  const pendingTargetLabel = pendingNewNote
+    ? pendingNewNote.notebookId
+      ? buildNotebookPaths(notebooks).get(pendingNewNote.notebookId) ??
+        "未知笔记本"
+      : "未分类"
+    : "";
 
   return (
     <RequireAuth>
@@ -45,11 +79,22 @@ export default function MainLayout({
 
         <div className="flex min-w-0 flex-1 flex-col">
           <Header
-            onNewNote={() => void createNote()}
+            onNewNote={() => void requestNewNote()}
             onOpenSidebar={() => setSidebarOpen(true)}
           />
           <main className="min-h-0 flex-1">{children}</main>
         </div>
+
+        {/* 顶部「新建笔记」的落点确认：明确写出会建到哪个笔记本（含完整路径） */}
+        <ConfirmDialog
+          open={pendingNewNote !== null}
+          title="新建笔记"
+          description={`将在「${pendingTargetLabel}」下创建新笔记，创建后直接进入编辑。`}
+          confirmLabel="创建"
+          destructive={false}
+          onConfirm={confirmNewNote}
+          onCancel={() => setPendingNewNote(null)}
+        />
 
         <Toaster />
         <CommandPalette />
