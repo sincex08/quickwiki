@@ -16,6 +16,8 @@ import {
   ArrowUp,
   Book,
   ChevronRight,
+  FileText,
+  Folder,
   FolderPlus,
   MoreHorizontal,
   Pencil,
@@ -181,6 +183,15 @@ function NoteRow({
         {note.pinned && (
           <Pin className="h-3 w-3 shrink-0 fill-primary text-primary" aria-hidden />
         )}
+        {/* 笔记类型图标：与笔记本行的「色点」成对——色点 = 容器，文件图标 = 笔记。
+            嵌套较深时只靠缩进分不清两类条目（2026-09-19 用户反馈） */}
+        <FileText
+          aria-hidden
+          className={cn(
+            "h-3.5 w-3.5 shrink-0",
+            active ? "text-primary" : "text-muted-foreground/70"
+          )}
+        />
         <span className={cn("truncate", !active && "text-foreground/90")}>
           {note.title}
         </span>
@@ -488,6 +499,17 @@ function NotebookNode({
       </div>
       {expanded && (
         <div className="pb-1">
+          {/* 两类条目并存时才加小标题：只靠缩进时，「子笔记本」与「本层的笔记」
+              看起来是同一类东西，一片条目扫下来没有分组感（2026-09-19） */}
+          {childNotebooks.length > 0 && childNotes.length > 0 && (
+            <div
+              className="mb-0.5 flex items-center gap-1 text-[11px] text-muted-foreground/70"
+              style={{ paddingLeft: indentOf(depth + 1) }}
+            >
+              <Folder aria-hidden className="h-3 w-3" />
+              子笔记本
+            </div>
+          )}
           {childNotebooks.map((child) => (
             <NotebookNode
               key={child.id}
@@ -500,11 +522,11 @@ function NotebookNode({
           {(childNotes.length > 0 || childNotebooks.length === 0) && (
             <div
               className={cn(
-                // 同时有子笔记本与笔记时：一条细横线把「笔记本块」与「笔记块」分开，
-                // 否则两类条目连成一片，看不出笔记是从这里开始的一组
+                // 同时有子笔记本与笔记时：分隔线与小标题一起，把「笔记本块」
+                // 与「本层的笔记」明确切开，而不是两类条目连成一片
                 childNotes.length > 0 &&
                   childNotebooks.length > 0 &&
-                  "mt-1.5 border-t border-border/60 pt-1"
+                  "mt-2 border-t border-border/60 pt-1.5"
               )}
               style={
                 childNotes.length > 0 && childNotebooks.length > 0
@@ -512,6 +534,12 @@ function NotebookNode({
                   : undefined
               }
             >
+              {childNotes.length > 0 && childNotebooks.length > 0 && (
+                <div className="mb-0.5 flex items-center gap-1 text-[11px] text-muted-foreground/70">
+                  <FileText aria-hidden className="h-3 w-3" />
+                  笔记
+                </div>
+              )}
               <TreeNoteRows
                 notes={childNotes}
                 depth={depth}
