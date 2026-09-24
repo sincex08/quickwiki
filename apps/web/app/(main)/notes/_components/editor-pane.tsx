@@ -328,7 +328,7 @@ export function EditorPane() {
     return (
       <div className="hidden h-full flex-col items-center justify-center gap-2 text-center text-muted-foreground md:flex">
         <PenLine className="h-10 w-10" />
-        <p className="text-sm">选择或新建一篇笔记开始写作</p>
+        <p className="text-sm">从左侧选择一篇笔记开始写作</p>
       </div>
     );
   }

@@ -24,7 +24,10 @@ import {
  * 注意：本面板渲染于公网页面，JS 字符串可被任何访客从构建产物中读到，
  * 严禁写入部署指引、后端配置细节、运维机制（保活/Secrets/区域等）内部信息，
  * 此类内容请写在仓库 ROADMAP.md。
- * 最近更新：2026-09-19（顶部「新建笔记」改为二次确认：弹窗先写明会建到哪个笔记本（含完整层级路径）再创建；
+ * 最近更新：2026-09-24（点笔记本后桌面中间直接显示该笔记本的子笔记本与笔记卡片列表，不再只有编辑器空态；
+ * 修复侧栏点击笔记本的展开/折叠错乱——再次点击已选中的笔记本只会取消选中，树保持展开，折叠只走左侧箭头；
+ * 帮助面板滚动时标题与右上角关闭按钮固定可见）
+ * 上一版 2026-09-19：顶部「新建笔记」改为二次确认：弹窗先写明会建到哪个笔记本（含完整层级路径）再创建；
  * 新建 / 编辑笔记本的「父级」下拉改用完整路径（如「笔记本A / 子笔记本B」）并按层级排序，多处同名子笔记本可准确区分；
  * 手机列表在笔记本下同屏展示「子笔记本」与「笔记」两块，点子笔记本即切换位置；
  * 手机新建笔记按钮抬高到统计栏之上，不再压住「仅标题」；左栏笔记行加文件图标、笔记本行保持色点，
@@ -63,7 +66,7 @@ const FEATURE_GROUPS: FeatureGroup[] = [
       "笔记本：8 色标识、重命名 / 删除（删除笔记本保留笔记）、按笔记本过滤",
       "笔记本可嵌套分组：编辑笔记本时选择「父级」（下拉按层级排序并显示完整路径，如同名子笔记本可准确区分），文件夹式层级不限；删除笔记本时子笔记本自动上移",
       "笔记本行的 ⋯ 菜单：新建笔记 / 新建子笔记本 / 重命名·移动 / 删除",
-      "侧边栏树状导航（笔记本 → 笔记）：点笔记直接打开，点笔记本展开并过滤；笔记行带文件图标、笔记本行带颜色圆点，两类条目一眼可辨",
+      "侧边栏树状导航（笔记本 → 笔记）：点笔记直接打开，点笔记本展开并选中，中间列表展示该笔记本的子笔记本与笔记卡片；笔记行带文件图标、笔记本行带颜色圆点，两类条目一眼可辨；再次点击已选中的笔记本即取消选中（树保持展开，收起走左侧箭头）",
       "调整笔记顺序：按住拖动即可（桌面直接拖侧栏或列表里的笔记；手机长按约 0.4 秒进入拖动，有轻振动提示），拖到笔记本行上＝移入该笔记本",
       "也可以不用拖动：笔记菜单里的「上移 / 下移」逐条微调，「恢复默认顺序」还原为按创建时间排列",
       "顺序按笔记本各自独立：只在调整过的笔记本内生效，其余仍按创建时间（早创建在前）排列",
@@ -157,7 +160,7 @@ const FEATURE_GROUPS: FeatureGroup[] = [
     title: "系统能力",
     items: [
       "PWA：可安装到桌面/主屏，离线可用",
-      "响应式：桌面双栏（树状导航 + 编辑器）/ 手机单栏（抽屉侧边栏 + 列表）",
+      "响应式：桌面三栏（树状导航 + 笔记列表 + 编辑器，选中笔记本时列表展示卡片）/ 手机单栏（抽屉侧边栏 + 列表）",
       "深色模式：深蓝灰 slate 色板，跟随系统或手动切换",
       "所有图标按钮/开关均有悬停描述，不靠图标猜功能",
       "触屏优化：手机/平板菜单常显、触摸目标加大（≥36px）",
@@ -200,14 +203,17 @@ export interface FeaturesDialogProps {
 export function FeaturesDialog({ open, onOpenChange }: FeaturesDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85dvh] max-w-2xl overflow-y-auto">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[85dvh] max-w-2xl flex-col overflow-hidden">
+        <DialogHeader className="shrink-0 pr-8">
           <DialogTitle>QuickWiki 功能清单</DialogTitle>
           <p className="text-xs text-muted-foreground">
-            本地优先的 Markdown 笔记 · 数据存储在浏览器，可完整导出 · 更新于 2026-09-16
+            本地优先的 Markdown 笔记 · 数据存储在浏览器，可完整导出 · 更新于 2026-09-24
           </p>
         </DialogHeader>
 
+        {/* 内容区独立滚动：标题与右上角关闭按钮固定在弹窗顶部，滚到底部仍可见。
+            此前 overflow-y-auto 挂在整个 DialogContent 上，标题和关闭按钮会随内容滚出视野 */}
+        <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="grid gap-4 sm:grid-cols-2">
           {FEATURE_GROUPS.map((group) => (
             <section
@@ -247,6 +253,7 @@ export function FeaturesDialog({ open, onOpenChange }: FeaturesDialogProps) {
         <p className="text-center text-[11px] text-muted-foreground">
           规划中：桌面客户端（Tauri）· 移动端 App
         </p>
+        </div>
       </DialogContent>
     </Dialog>
   );

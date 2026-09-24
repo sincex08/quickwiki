@@ -73,12 +73,14 @@ function NotesLayout() {
 
   return (
     <div className="flex h-full min-h-0">
-      {/* 笔记列表卡片视图：仅移动端保留（桌面端导航已并入侧栏树），
-          打开笔记时隐藏 */}
+      {/* 笔记列表卡片视图：移动端未打开笔记时显示；桌面端在选中笔记本后
+          也显示（点笔记本 → 中间立即看到该笔记本的子笔记本与笔记卡片，
+          而不是只有编辑器空态）。未选择笔记本时桌面端仍只显示默认页。 */}
       <div
         className={cn(
-          "w-full flex-col border-r md:hidden",
-          activeNoteId ? "hidden" : "flex"
+          "w-full flex-col border-r md:w-72 md:shrink-0",
+          activeNoteId ? "hidden" : "flex",
+          showDefaultPage && "md:hidden"
         )}
       >
         {showDefaultPage ? <EmptyWorkspace /> : <NoteListPane />}

@@ -444,8 +444,10 @@ function NotebookNode({
         <button
           type="button"
           onClick={() => {
-            // 已选中时再点 = 取消选中（不改展开态，避免「收起来了 + 内容也没了」的混乱）
-            if (!selected && hasChildren) onToggle(notebook.id);
+            // 未展开时顺带展开；已展开的保持展开，折叠只走左侧箭头。
+            // 此前条件是 !selected：取消选中后树仍是展开的，再次点击（重新选中）
+            // 会把已展开的子树折叠——表现为「选中→取消→再选中，树却收起来了」。
+            if (!expanded && hasChildren) onToggle(notebook.id);
             onSelect(notebook.id);
           }}
           className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-left"
@@ -811,8 +813,9 @@ export function SidebarContent() {
             <button
               type="button"
               onClick={() => {
-                // 已选中时再点 = 取消选中（不改展开态）
-                if (notebookFilter !== "none" && uncategorizedNotes.length > 0)
+                // 未展开时顺带展开；已展开的保持展开（与笔记本行同规则，
+                // 折叠只走箭头，取消选中不影响展开态）
+                if (!expandedSet.has("none") && uncategorizedNotes.length > 0)
                   toggleTreeExpandedId("none");
                 selectNotebook("none");
               }}
