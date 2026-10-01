@@ -40,7 +40,7 @@ export function SearchBox() {
   const boxRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  const { items, searching, isSearching } = useSearchPanel(query);
+  const { items, searching, error, isSearching } = useSearchPanel(query);
 
   // 关键词变化 → 高亮项回到首条（否则下标可能越界）
   useEffect(() => {
@@ -163,6 +163,7 @@ export function SearchBox() {
           query={query}
           items={items}
           loading={searching}
+          error={error}
           activeIndex={activeIndex}
           onHover={setActiveIndex}
           onSelect={handleSelect}

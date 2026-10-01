@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   CircleUserRound,
@@ -15,6 +15,13 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -26,24 +33,131 @@ import { FeaturesDialog } from "@/components/common/features-dialog";
 import { SearchBox } from "@/components/search/search-box";
 import { useTheme } from "@/components/theme-provider";
 import { useUIStore } from "@/stores/use-ui-store";
+import { useToastStore } from "@/stores/use-toast-store";
 import { getSearchManager } from "@/lib/search/search-manager";
 import { noteRepo } from "@/lib/data/repository";
 import { exportAllAsZip, exportNoteAsMarkdown } from "@/lib/export";
 import { getSupabase, isSupabaseConfigured } from "@/lib/supabase/client";
 import {
+  clearDeadOutbox,
   getSyncState,
+  listDeadOutboxEntries,
+  retryDeadOutbox,
   subscribeSync,
   syncNow,
   type SyncState,
 } from "@/lib/sync/sync-engine";
 import { cn } from "@/lib/utils";
 
+/** 同步状态徽标文案：kind → 实体名 */
+const DEAD_KIND_LABEL: Record<string, string> = {
+  note: "笔记",
+  notebook: "笔记本",
+  attachment: "附件",
+};
+
+/**
+ * 毒丸隔离条目处置：连续推送失败的本地改动已停止同步，这里给出
+ * 「查看 → 重试全部 / 放弃」的显式路径，而不是只留头部一行错误文案。
+ */
+function DeadOutboxDialog({
+  open,
+  onOpenChange,
+  onChanged,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onChanged: () => void;
+}) {
+  const [entries, setEntries] = useState<
+    Array<{ key: string; kind: string; deleted: boolean }>
+  >([]);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    void listDeadOutboxEntries().then((es) =>
+      setEntries(es.map((e) => ({ key: e.key, kind: e.kind, deleted: e.deleted })))
+    );
+  }, [open]);
+
+  const retryAll = async () => {
+    setBusy(true);
+    try {
+      const n = await retryDeadOutbox();
+      useToastStore.getState().show(`已恢复 ${n} 条改动的同步`, "success");
+      onOpenChange(false);
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clearAll = async () => {
+    setBusy(true);
+    try {
+      const n = await clearDeadOutbox();
+      useToastStore
+        .getState()
+        .show(`已放弃 ${n} 条改动（云端不受影响）`, "success");
+      onOpenChange(false);
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{entries.length} 条改动推送失败</DialogTitle>
+        </DialogHeader>
+        <p className="text-sm leading-relaxed text-muted-foreground">
+          以下本地改动连续推送失败，已被停止重试（不影响其它内容的同步）。
+          网络恢复后可重试；放弃则本机不再同步这些改动，云端以其它设备为准。
+        </p>
+        <ul className="max-h-44 space-y-1 overflow-y-auto rounded-md border p-2 text-xs">
+          {entries.map((e) => (
+            <li key={e.key} className="flex items-center gap-2">
+              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-muted-foreground">
+                {DEAD_KIND_LABEL[e.kind] ?? e.kind}
+                {e.deleted ? " · 删除" : ""}
+              </span>
+              <span className="truncate font-mono text-muted-foreground">
+                {e.key}
+              </span>
+            </li>
+          ))}
+        </ul>
+        <DialogFooter>
+          <Button variant="outline" disabled={busy} onClick={() => void clearAll()}>
+            放弃这些改动
+          </Button>
+          <Button disabled={busy} onClick={() => void retryAll()}>
+            {busy ? "处理中…" : "全部重试"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /** 云同步状态芯片：未配置隐藏；未登录显示登录入口；已登录显示同步状态 + 账号菜单 */
 function SyncChip() {
   const router = useRouter();
   const [sync, setSync] = useState<SyncState>(() => getSyncState());
+  const [deadCount, setDeadCount] = useState(0);
+  const [deadOpen, setDeadOpen] = useState(false);
 
   useEffect(() => subscribeSync(setSync), []);
+
+  const refreshDeadCount = useCallback(() => {
+    void listDeadOutboxEntries().then((es) => setDeadCount(es.length));
+  }, []);
+
+  // 挂载与每轮同步状态变化后刷新隔离条目数（push 尝试会增减 dead 集合）
+  useEffect(refreshDeadCount, [refreshDeadCount, sync.status, sync.lastSyncAt]);
 
   if (!isSupabaseConfigured) return null;
 
@@ -81,16 +195,23 @@ function SyncChip() {
         variant="ghost"
         size="icon"
         className="relative"
-        title={`${statusText} · 点击立即同步`}
+        title={
+          deadCount > 0
+            ? `${statusText} · ${deadCount} 条改动推送失败，点击处理`
+            : `${statusText} · 点击立即同步`
+        }
         aria-label="云同步状态"
         disabled={sync.status === "syncing"}
-        onClick={() => void syncNow()}
+        onClick={() => {
+          if (deadCount > 0) setDeadOpen(true);
+          else void syncNow();
+        }}
       >
         <RefreshCw
           className={cn(
             "h-4 w-4",
             sync.status === "syncing" && "animate-spin",
-            sync.status === "error" && "text-destructive"
+            (sync.status === "error" || deadCount > 0) && "text-destructive"
           )}
         />
         {/* 常驻错误角标：错误详情在 hover 提示与账号菜单里，不悬停也能注意到 */}
@@ -100,7 +221,19 @@ function SyncChip() {
             aria-hidden
           />
         )}
+        {/* 隔离条目计数角标：点击进入处置对话框 */}
+        {deadCount > 0 && (
+          <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-medium leading-none text-white">
+            {deadCount > 9 ? "9+" : deadCount}
+          </span>
+        )}
       </Button>
+
+      <DeadOutboxDialog
+        open={deadOpen}
+        onOpenChange={setDeadOpen}
+        onChanged={refreshDeadCount}
+      />
 
       {/* 账号模块：下拉含账号管理 / 立即同步 / 退出登录 */}
       <DropdownMenu>

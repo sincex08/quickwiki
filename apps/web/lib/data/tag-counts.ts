@@ -104,14 +104,17 @@ export async function retractNoteTags(noteId: string): Promise<void> {
  * 幂等：无漂移时零写入。返回是否有修正（供调用方决定是否发事件刷新 UI）。
  */
 export async function reconcileTags(): Promise<boolean> {
-  // 期望态：noteId -> 规范化标签（事务外只读快照）
-  const desiredTags = new Map<string, string[]>();
-  await db.notes.each((n) => {
-    desiredTags.set(n.id, cleanTags(n.tags));
-  });
-
   let changed = false;
-  await db.transaction("rw", db.noteTags, db.tags, async () => {
+  // 快照与对账必须在同一事务内：事务外只读快照的话，窗口期新打的标签
+  // 不在快照里，会被下方的孤儿清理误删（下次 reconcile 自愈，但期间
+  // 标签过滤/角标短暂错误）。db.notes 一并纳入事务作用域。
+  await db.transaction("rw", db.notes, db.noteTags, db.tags, async () => {
+    // 期望态：noteId -> 规范化标签
+    const desiredTags = new Map<string, string[]>();
+    await db.notes.each((n) => {
+      desiredTags.set(n.id, cleanTags(n.tags));
+    });
+
     // 关联对账：删掉孤儿行（笔记已删 / 标签已摘），补建缺失行
     for (const row of await db.noteTags.toArray()) {
       if (desiredTags.get(row.noteId)?.includes(row.tagName)) continue;

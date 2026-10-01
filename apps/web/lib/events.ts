@@ -17,6 +17,12 @@ export interface ChangeEvent {
    * 真实环境踩过：新建笔记本后笔记 FK 卡死 + 假收敛，2026-10-01）。
    */
   remote?: boolean;
+  /**
+   * 跨标签页广播转发的他页本地写。发起页已入队并将负责推送；
+   * 接收页若照常入队会以新 revision 覆盖发起页条目、两页并发 push
+   * 同一实体互相踩回执。引擎据此跳过入队；UI 订阅方不受影响照常刷新。
+   */
+  relayed?: boolean;
 }
 
 export type Channel = "notes" | "notebooks" | "tags" | "attachments";
@@ -88,9 +94,11 @@ if (typeof BroadcastChannel !== "undefined") {
       if (!data?.channel || !data.event) return;
       // 丢弃自己发出的（被回投）消息，避免本页重复处理自己的变更
       if (data.source === BC_INSTANCE_ID) return;
+      // 打上 relayed 标记：这是他页的本地写，引擎不应再重复入队（见 ChangeEvent.relayed）
+      const relayed: ChangeEvent = { ...data.event, relayed: true };
       listeners.get(data.channel)?.forEach((handler) => {
         try {
-          handler(data.event!);
+          handler(relayed);
         } catch (err) {
           console.error(`remote change handler error on [${data.channel}]`, err);
         }

@@ -52,6 +52,8 @@ export interface SearchResultsPanelProps {
   query: string;
   items: SearchPanelItem[];
   loading: boolean;
+  /** 搜索管线异常：显示可操作的错误提示而非「无结果」 */
+  error?: boolean;
   activeIndex: number;
   onHover: (index: number) => void;
   onSelect: (item: SearchPanelItem) => void;
@@ -74,6 +76,7 @@ export function SearchResultsPanel({
   query,
   items,
   loading,
+  error = false,
   activeIndex,
   onHover,
   onSelect,
@@ -93,6 +96,17 @@ export function SearchResultsPanel({
               <Skeleton className="h-3 w-full" />
             </div>
           ))}
+        </div>
+      ) : error ? (
+        <div className="flex flex-col items-center gap-1.5 px-3 py-6 text-center">
+          <SearchX
+            className="h-5 w-5 text-muted-foreground/70"
+            aria-hidden
+          />
+          <p className="text-xs text-muted-foreground">搜索暂时不可用</p>
+          <p className="text-[11px] text-muted-foreground/80">
+            修改关键字可重试；若持续出现，刷新页面会重建搜索索引
+          </p>
         </div>
       ) : items.length === 0 ? (
         <div className="flex flex-col items-center gap-1.5 px-3 py-6 text-center">

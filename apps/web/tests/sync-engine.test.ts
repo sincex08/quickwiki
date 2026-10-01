@@ -476,6 +476,31 @@ describe("push：outbox 毒丸隔离", () => {
     // 条目保留，等待人工排查（不静默丢数据）
     expect(await db.outbox.get("note:bad")).toBeDefined();
   });
+
+  it("sort_order 列探测遇瞬时错误不缓存，恢复后照常写入", async () => {
+    const note = localNote({ id: "probe-note" });
+    await db.notes.put(note);
+    await db.outbox.put({
+      key: "note:probe-note",
+      kind: "note",
+      entityId: "probe-note",
+      deleted: false,
+      queuedAt: 1,
+    });
+
+    // 首轮探测即遇网络错误：不得缓存为「服务端缺列」，否则整个会话
+    // 手动排序静默不再同步
+    fake.hooks.fail = "network down";
+    await syncNow();
+    expect(getSyncState().status).toBe("error");
+
+    fake.hooks.fail = null;
+    await syncNow();
+    const row = tables.notes.find((r) => r.id === "probe-note");
+    expect(row).toBeDefined();
+    expect(row!.sort_order).toBeNull();
+    expect(await db.outbox.get("note:probe-note")).toBeUndefined();
+  });
 });
 
 describe("笔记本嵌套：parent_id 同步", () => {
@@ -578,6 +603,29 @@ describe("笔记本嵌套：parent_id 同步", () => {
     expect((await db.notebooks.get("nb10"))!.name).toBe("远端新名");
     // dead 条目保留，等待人工处置
     expect((await db.outbox.get("notebook:nb10"))!.dead).toBe(true);
+  });
+
+  it("pull 笔记墓碑遇本地较新编辑：复活入队携带 revision", async () => {
+    await db.notes.put(
+      localNote({ id: "rev-note", updatedAt: Date.now(), content: "本地较新" })
+    );
+    tables.notes.push(
+      remoteNote({
+        id: "rev-note",
+        deleted_at: clock.at(1000),
+        updated_at: clock.at(1000),
+        server_updated_at: clock.at(1000),
+      })
+    );
+
+    await syncNow();
+
+    // 复活条目必须有 revision：push 回执按修订条件确认，缺失时
+    // （undefined === undefined 恒真）跨页并发场景会误确认新意图
+    const entry = await db.outbox.get("note:rev-note");
+    expect(entry).toBeDefined();
+    expect(entry!.revision).toBeDefined();
+    expect(await db.notes.get("rev-note")).toBeDefined();
   });
 
   it("远端 LWW 造环：apply 侧断环并入队推平", async () => {

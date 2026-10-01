@@ -7,8 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { db } from "@/lib/db";
+import { getSearchManager } from "@/lib/search/search-manager";
 import { getSessionAuthMethod, getSupabase, isSupabaseConfigured } from "@/lib/supabase/client";
-import { getSyncState, subscribeSync, type SyncState } from "@/lib/sync/sync-engine";
+import { getSyncState, stopSyncEngine, subscribeSync, type SyncState } from "@/lib/sync/sync-engine";
 
 /** 会话签发方式 → 展示名（登录方式只有邮箱：密码 or 邮箱链接） */
 const METHOD_LABEL: Record<string, string> = {
@@ -32,12 +33,22 @@ const PWD_MARKER_PREFIX = "quickwiki.pwd-set.";
 const METHOD_TIMEOUT_MS = 8000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(`读取超时（${Math.round(ms / 1000)}s）`)), ms)
-    ),
-  ]);
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`读取超时（${Math.round(ms / 1000)}s）`)),
+      ms
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
 }
 
 function readPasswordMarker(uid: string | null): string | null {
@@ -143,9 +154,34 @@ export default function AccountPage() {
     setWipeBusy(true);
     setWipeError(null);
     try {
+      // 先停同步引擎与搜索索引：5s/1.5s 防抖、前台 interval、懒下载回填、
+      // 30s 索引落盘若在 delete() 期间触发，会让 Dexie 自动重开同名库，
+      // 删除失败或留下残留数据
+      stopSyncEngine();
+      getSearchManager().stop();
       // 关闭连接后再删除：打开状态下的 delete() 在部分浏览器会悬挂
       db.close();
-      await db.delete();
+      // 其它标签页持有连接时 delete() 会一直阻塞：10s 超时给出明确指引，
+      // 而不是永远停在「正在清除」
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () =>
+            reject(
+              new Error("删除超时：本站点的其它标签页可能还开着，请关闭后重试")
+            ),
+          10_000
+        );
+        db.delete().then(
+          () => {
+            clearTimeout(timer);
+            resolve();
+          },
+          (e: unknown) => {
+            clearTimeout(timer);
+            reject(e);
+          }
+        );
+      });
       try {
         if (sync.userId) localStorage.removeItem(PWD_MARKER_PREFIX + sync.userId);
       } catch {

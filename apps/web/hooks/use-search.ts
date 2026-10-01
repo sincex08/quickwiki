@@ -20,6 +20,8 @@ interface SearchHit {
 function useSearchHits(query: string) {
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [searching, setSearching] = useState(false);
+  /** 搜索管线异常（索引库损坏等）：面板显示错误提示而非永远「无结果」 */
+  const [error, setError] = useState(false);
   /** 请求序号：只有最新一次搜索允许回写，防止快速输入时旧的异步结果覆盖新结果 */
   const seqRef = useRef(0);
 
@@ -29,6 +31,7 @@ function useSearchHits(query: string) {
     if (!q) {
       setHits(null);
       setSearching(false);
+      setError(false);
       return;
     }
     setSearching(true);
@@ -46,6 +49,15 @@ function useSearchHits(query: string) {
             return note ? [{ note, snippet: r.snippet }] : [];
           })
         );
+        setError(false);
+      } catch (err) {
+        // 无 catch 时 rejection 直接逃逸成 unhandled rejection，UI 停在
+        // 「无结果」且无任何提示。标记错误态让面板给出可操作的反馈。
+        console.warn("search failed:", err);
+        if (seqRef.current === seq) {
+          setHits([]);
+          setError(true);
+        }
       } finally {
         // 成功、过期、异常都收尾，避免异常路径让 searching 永远卡在 true
         if (seqRef.current === seq) setSearching(false);
@@ -54,7 +66,7 @@ function useSearchHits(query: string) {
     return () => clearTimeout(timer);
   }, [query]);
 
-  return { hits, searching };
+  return { hits, searching, error };
 }
 
 /** 一条搜索结果：笔记 + 摘要 + 展示用的笔记本信息 */
@@ -75,7 +87,7 @@ export interface SearchPanelItem {
  * 标出它属于哪个笔记本——否则用户不知道这条为什么出现在当前视图里。
  */
 export function useSearchPanel(query: string) {
-  const { hits, searching } = useSearchHits(query);
+  const { hits, searching, error } = useSearchHits(query);
   const { notebooks } = useNotebooks();
 
   const items = useMemo<SearchPanelItem[]>(() => {
@@ -95,5 +107,5 @@ export function useSearchPanel(query: string) {
     });
   }, [hits, notebooks]);
 
-  return { items, searching, isSearching: query.trim().length > 0 };
+  return { items, searching, error, isSearching: query.trim().length > 0 };
 }

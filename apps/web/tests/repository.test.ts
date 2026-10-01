@@ -147,6 +147,7 @@ describe("笔记本嵌套", () => {
     expect(await canSetParent(root, null)).toBe(true);
     expect(await canSetParent(child, root)).toBe(true);
     expect(await canSetParent(root, root)).toBe(false);
+    expect(await canSetParent(root, "nonexistent-id")).toBe(false); // 父级不存在 → 拒绝
 
     // update 侧兜底：环组合直接抛错
     await expect(

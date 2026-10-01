@@ -58,6 +58,16 @@ function PreWithCopy({
 }: React.HTMLAttributes<HTMLPreElement> & { node?: unknown }) {
   const ref = useRef<HTMLPreElement>(null);
   const [copied, setCopied] = useState(false);
+  const copiedTimerRef = useRef<number | null>(null);
+
+  // 卸载时清理「已复制」复位定时器，避免卸载后 setState
+  useEffect(
+    () => () => {
+      if (copiedTimerRef.current !== null) clearTimeout(copiedTimerRef.current);
+    },
+    []
+  );
+
   return (
     <div className="group/pre relative">
       <button
@@ -67,7 +77,10 @@ function PreWithCopy({
           try {
             await navigator.clipboard.writeText(ref.current?.textContent ?? "");
             setCopied(true);
-            setTimeout(() => setCopied(false), 1500);
+            copiedTimerRef.current = window.setTimeout(
+              () => setCopied(false),
+              1500
+            );
           } catch {
             // 剪贴板不可用：静默失败
           }

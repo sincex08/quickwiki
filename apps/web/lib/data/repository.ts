@@ -116,9 +116,13 @@ export async function canSetParent(
 ): Promise<boolean> {
   if (!newParentId) return true;
   if (newParentId === id) return false;
-  let cursor = await db.notebooks.get(newParentId);
+  const parent = await db.notebooks.get(newParentId);
+  // 父级不存在：拒绝（远端先删父级 + 本地并发移动的窗口），
+  // 否则会造出指向不存在笔记本的孤儿行
+  if (!parent) return false;
+  let cursor: Notebook | undefined = parent;
   while (cursor) {
-    const next = cursor.parentId ?? null;
+    const next: string | null = cursor.parentId ?? null;
     if (!next) return true;
     if (next === id) return false;
     cursor = await db.notebooks.get(next);

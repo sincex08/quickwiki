@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -85,8 +85,13 @@ export function NotebookDialog({
     [eligibleParents]
   );
 
+  /** 防重入：submit 是异步的，按住回车（键盘自动重复）或快速双击会在
+   *  create 完成关闭弹窗前再次进入，创建出同名重复笔记本 */
+  const submittingRef = useRef(false);
+
   const submit = async () => {
-    if (!name.trim()) return;
+    if (!name.trim() || submittingRef.current) return;
+    submittingRef.current = true;
     const nextParent = parentId ?? null;
     try {
       if (editingId) {
@@ -114,6 +119,8 @@ export function NotebookDialog({
       useToastStore
         .getState()
         .show(e instanceof Error ? e.message : "保存失败", "error");
+    } finally {
+      submittingRef.current = false;
     }
   };
 

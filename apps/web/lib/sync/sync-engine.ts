@@ -283,10 +283,23 @@ function unsubscribeRealtime(sb: SupabaseClient): void {
 // ---------- 初始化 ----------
 
 let initialized = false;
+/** initSync 注册的退订函数（事件订阅 / auth 状态订阅），stopSyncEngine 时统一退订 */
+let unsubscribes: Array<() => void> = [];
+let foregroundTimer: number | null = null;
+let onlineHandler: (() => void) | null = null;
+let visibilityHandler: (() => void) | null = null;
+let authUnsubscribe: (() => void) | null = null;
+/**
+ * 引擎停止后置位：拦截停止瞬间仍在飞行的写入（blob 回填、同步尾），
+ * 防止 Dexie 在 db.delete() 期间自动重开同名库——删除失败或残留脏数据。
+ * 「清除本机数据」前必须先 stopSyncEngine()。
+ */
+let engineStopped = false;
 
 export async function initSync(): Promise<void> {
   if (initialized) return;
   initialized = true;
+  engineStopped = false;
 
   const sb = getSupabase();
   if (!sb) {
@@ -304,45 +317,52 @@ export async function initSync(): Promise<void> {
     userEmail: data.session?.user.email ?? null,
   });
 
-  sb.auth.onAuthStateChange((_ev, session) => {
-    syncUidMarker(session?.user.id ?? null);
-    setState({
-      userId: session?.user.id ?? null,
-      userEmail: session?.user.email ?? null,
-    });
-    if (session?.user.id) {
-      subscribeRealtime(sb, session.user.id);
-      void syncNow();
-    } else {
-      unsubscribeRealtime(sb);
-      setState({ status: "signed-out" });
-    }
-  });
-
-  subscribe("notes", (e) => {
-    // 只跳过「远端应用」回声；本地写入（哪怕发生在 pull 进行中）必须照常入队——
-    // 时间窗防护会静默丢写入（真实环境踩过：pull 期间新建笔记本，入队丢失，
-    // 笔记随后 FK 卡死 + 假收敛，2026-10-01）
-    if (e.remote) return;
-    void enqueue("note", e.ids, e.type === "delete");
-    // 删除笔记级联：本地附件一并删除（其 delete 事件会自动入队附件墓碑）
-    if (e.type === "delete") {
-      for (const noteId of e.ids) {
-        void attachmentRepo.deleteByNote(noteId).catch(() => {});
+  authUnsubscribe = (() => {
+    const { data } = sb.auth.onAuthStateChange((_ev, session) => {
+      syncUidMarker(session?.user.id ?? null);
+      setState({
+        userId: session?.user.id ?? null,
+        userEmail: session?.user.email ?? null,
+      });
+      if (session?.user.id) {
+        subscribeRealtime(sb, session.user.id);
+        void syncNow();
+      } else {
+        unsubscribeRealtime(sb);
+        setState({ status: "signed-out" });
       }
-    }
-    scheduleSync();
-  });
-  subscribe("notebooks", (e) => {
-    if (e.remote) return;
-    void enqueue("notebook", e.ids, e.type === "delete");
-    scheduleSync();
-  });
-  subscribe("attachments", (e) => {
-    if (e.remote || localAttachmentWrite) return;
-    void enqueue("attachment", e.ids, e.type === "delete");
-    scheduleSync();
-  });
+    });
+    return () => data.subscription.unsubscribe();
+  })();
+
+  unsubscribes.push(
+    subscribe("notes", (e) => {
+      // 只跳过「远端应用」与「他页广播」回声；本页本地写入（哪怕发生在 pull
+      // 进行中）必须照常入队——时间窗防护会静默丢写入（真实环境踩过：pull
+      // 期间新建笔记本，入队丢失，笔记随后 FK 卡死 + 假收敛，2026-10-01）。
+      // 他页本地写已由发起页入队并负责推送，本页重复入队会以新 revision
+      // 覆盖发起页条目、两页并发 push 互踩回执。
+      if (e.remote || e.relayed) return;
+      void enqueue("note", e.ids, e.type === "delete");
+      // 删除笔记级联：本地附件一并删除（其 delete 事件会自动入队附件墓碑）
+      if (e.type === "delete") {
+        for (const noteId of e.ids) {
+          void attachmentRepo.deleteByNote(noteId).catch(() => {});
+        }
+      }
+      scheduleSync();
+    }),
+    subscribe("notebooks", (e) => {
+      if (e.remote || e.relayed) return;
+      void enqueue("notebook", e.ids, e.type === "delete");
+      scheduleSync();
+    }),
+    subscribe("attachments", (e) => {
+      if (e.remote || e.relayed || localAttachmentWrite) return;
+      void enqueue("attachment", e.ids, e.type === "delete");
+      scheduleSync();
+    })
+  );
 
   // 渲染层发现本地缺 blob 时的懒下载入口
   setBlobMissingHandler((id) => queueBlobDownload(id));
@@ -350,18 +370,20 @@ export async function initSync(): Promise<void> {
   if (typeof window !== "undefined") {
     // 恢复联网：先续期会话再同步——长时间断网后 access token 可能已过期，
     // 直接 syncNow 会以过期 token 请求而 401 失败
-    window.addEventListener("online", () => {
+    onlineHandler = () => {
       void ensureFreshSession().then(() => void syncNow());
-    });
+    };
+    window.addEventListener("online", onlineHandler);
     // 移动端浏览器长时间后台后切回前台：access token 可能已过期，
     // 先续期会话再同步（节流），避免「第二天打开就要重新登录」与频繁切换的请求风暴
-    document.addEventListener("visibilitychange", () => {
+    visibilityHandler = () => {
       if (document.visibilityState !== "visible") return;
       foregroundSync();
-    });
+    };
+    document.addEventListener("visibilitychange", visibilityHandler);
     // 兜底拉取：移动端后台 WebSocket 会被系统回收且未必有事件可收，
     // 页面可见期间周期性对账（与 visibilitychange 共用节流）
-    window.setInterval(() => {
+    foregroundTimer = window.setInterval(() => {
       if (document.visibilityState === "visible" && state.userId) {
         foregroundSync();
       }
@@ -374,6 +396,74 @@ export async function initSync(): Promise<void> {
   } else {
     setState({ status: "signed-out" });
   }
+}
+
+/**
+ * 停止引擎的全部活动（事件订阅、Realtime、防抖、前台 interval、auth 监听），
+ * 并拦截仍在飞行的写入。「清除本机数据」删除 IndexedDB 前必须调用：
+ * 否则任何一次延迟触发的写入都会让 Dexie 自动重开正被删除的库。
+ */
+export function stopSyncEngine(): void {
+  if (!initialized) return;
+  initialized = false;
+  engineStopped = true;
+  scheduleSync.cancel();
+  scheduleRealtimeSync.cancel();
+  for (const off of unsubscribes) off();
+  unsubscribes = [];
+  authUnsubscribe?.();
+  authUnsubscribe = null;
+  const sb = getSupabase();
+  if (sb) unsubscribeRealtime(sb);
+  blobDownloadQueued.clear();
+  if (typeof window !== "undefined") {
+    if (foregroundTimer !== null) {
+      window.clearInterval(foregroundTimer);
+      foregroundTimer = null;
+    }
+    if (onlineHandler) window.removeEventListener("online", onlineHandler);
+    if (visibilityHandler) {
+      document.removeEventListener("visibilitychange", visibilityHandler);
+    }
+    onlineHandler = null;
+    visibilityHandler = null;
+  }
+  setState({ status: "disabled", userId: null, userEmail: null });
+}
+
+// ---------- dead 条目处置 ----------
+
+/**
+ * 毒丸隔离的条目：连续推送失败达上限被标记 dead，push 跳过它们。
+ * 对用户而言等价于「这些本机改动已停止同步」，需要可感知的处置路径
+ * （重试或放弃），而不是只有头部一行错误文案。
+ */
+export async function listDeadOutboxEntries(): Promise<OutboxEntry[]> {
+  return db.outbox.filter((e) => e.dead === true).toArray();
+}
+
+/** 重试全部 dead 条目：解除隔离、清零失败计数并立即触发同步 */
+export async function retryDeadOutbox(): Promise<number> {
+  const dead = await listDeadOutboxEntries();
+  if (dead.length === 0) return 0;
+  await db.outbox.bulkPut(
+    dead.map((e) => ({
+      ...e,
+      dead: false,
+      attempts: 0,
+      queuedAt: Date.now(),
+    }))
+  );
+  scheduleSync();
+  return dead.length;
+}
+
+/** 清除全部 dead 条目：等同放弃这些本地改动（云端以其它端的数据为准） */
+export async function clearDeadOutbox(): Promise<number> {
+  const dead = await listDeadOutboxEntries();
+  if (dead.length === 0) return 0;
+  await db.outbox.bulkDelete(dead.map((e) => e.key));
+  return dead.length;
 }
 
 /** outbox 操作修订标识：每次入队生成新值，push 回执按修订条件确认 */
@@ -445,6 +535,8 @@ let syncInFlight: Promise<void> | null = null;
 let syncAgain = false;
 
 export function syncNow(): Promise<void> {
+  // 引擎已停止（清除本机数据）：不再发起任何读写，防止 Dexie 重开正被删除的库
+  if (engineStopped) return Promise.resolve();
   if (syncInFlight) {
     syncAgain = true;
     return syncInFlight;
@@ -557,6 +649,7 @@ async function push(sb: SupabaseClient): Promise<string | null> {
 
 interface RemoteRowMeta {
   id: string;
+  user_id: string;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -651,6 +744,11 @@ async function saveLocalVersion(
  * - 本地编辑时间晚于远端 server_updated_at → 以远端当前版本为基线覆盖写入
  *   （写入行带 deleted_at: null，可顺带复活墓碑）
  * - 否则远端胜出，强制回填本地（裁决已完成，跳过 pull 期的本地优先检查）
+ *
+ * depth：条件更新返回 0 行（远端版本在快照后又前进）时重取最新远端行并
+ * 重入裁决。**绝不能拿过期快照 applyRemote(force)**——那会把本地较新的
+ * 编辑按陈旧状态接受成删除/覆盖，且 outbox 照常确认，改动静默丢失。
+ * depth 封顶后抛错保留条目走重试，避免理论上的无限递归。
  */
 async function resolveWithRemote<T extends { id: string; updatedAt: number }>(
   sb: SupabaseClient,
@@ -658,8 +756,12 @@ async function resolveWithRemote<T extends { id: string; updatedAt: number }>(
   kind: "note" | "notebook",
   id: string,
   buildRow: (fresh: T) => Record<string, unknown> & { id: string },
-  remote: RemoteRowMeta
+  remote: RemoteRowMeta,
+  depth = 0
 ): Promise<void> {
+  if (depth >= 3) {
+    throw new Error(`${table}:${id} 冲突裁决未收敛，稍后重试`);
+  }
   const fresh = (
     table === "notes" ? await db.notes.get(id) : await db.notebooks.get(id)
   ) as T | undefined;
@@ -685,7 +787,11 @@ async function resolveWithRemote<T extends { id: string; updatedAt: number }>(
         );
         return;
       }
-      // 版本再次被并发写入：接受远端，依赖下轮 pull 收敛
+      // 版本再次被并发写入：快照已过期，重取最新远端行重走裁决
+      const latest = await fetchRemote(sb, table, id);
+      if (!latest) return;
+      await resolveWithRemote(sb, table, kind, id, buildRow, latest, depth + 1);
+      return;
     }
     await applyRemote(table, remote);
     return;
@@ -707,6 +813,11 @@ async function resolveWithRemote<T extends { id: string; updatedAt: number }>(
       );
       return;
     }
+    // 版本再次被并发写入：快照已过期，重取最新远端行重走裁决
+    const latest = await fetchRemote(sb, table, id);
+    if (!latest) return;
+    await resolveWithRemote(sb, table, kind, id, buildRow, latest, depth + 1);
+    return;
   }
   await applyRemote(table, remote, true);
 }
@@ -764,21 +875,28 @@ async function pushTombstone(
 
 /**
  * 服务端 notes 是否有 sort_order 列（2026-09-16 迁移加入）。
- * 每个会话只探测一次并缓存：没跑迁移时降级为「顺序仅本机生效」，
+ * 探测结论按错误类型区分缓存：没跑迁移（42703）时降级为「顺序仅本机生效」，
  * 而不是让 push 持续失败把 outbox 堵死（那会连带堵住正文同步）。
+ * 网络抖动 / 401 等瞬时错误**不缓存**：缓存会把整个会话打成「不写
+ * sort_order」，手动排序静默不再同步且难以察觉——抛错让条目走正常重试。
  */
 let sortOrderColumnFlag: boolean | null = null;
 
 async function hasSortOrderColumn(sb: SupabaseClient): Promise<boolean> {
   if (sortOrderColumnFlag !== null) return sortOrderColumnFlag;
   const probe = await sb.from("notes").select("sort_order").limit(1);
-  sortOrderColumnFlag = !probe.error;
-  if (!sortOrderColumnFlag) {
+  if (!probe.error) {
+    sortOrderColumnFlag = true;
+    return true;
+  }
+  if ((probe.error as { code?: string }).code === "42703") {
+    sortOrderColumnFlag = false;
     console.warn(
       "服务端 notes 表缺少 sort_order 列：手动顺序仅本机生效，请在 Supabase 执行迁移 SQL"
     );
+    return false;
   }
-  return sortOrderColumnFlag;
+  throw new Error(`sort_order 列探测失败：${probe.error.message}`);
 }
 
 async function pushNote(
@@ -1227,6 +1345,7 @@ async function sweepOrphanNotes(): Promise<void> {
           entityId: id,
           deleted: false,
           queuedAt: Date.now(),
+          revision: newRevision(),
         }))
       );
       batchEmit("notes", "update", affectedIds);
@@ -1247,6 +1366,7 @@ async function applyRemoteNote(row: RemoteNote, force = false): Promise<void> {
         entityId: row.id,
         deleted: false,
         queuedAt: Date.now(),
+        revision: newRevision(),
       });
       scheduleSync();
       return;
@@ -1338,6 +1458,7 @@ async function applyRemoteNotebook(
         entityId: row.id,
         deleted: false,
         queuedAt: Date.now(),
+        revision: newRevision(),
       });
       scheduleSync();
       return;
@@ -1372,6 +1493,7 @@ async function applyRemoteNotebook(
           entityId: id,
           deleted: false,
           queuedAt: Date.now(),
+          revision: newRevision(),
         }))
       );
       scheduleSync();
@@ -1403,6 +1525,7 @@ async function applyRemoteNotebook(
           entityId: id,
           deleted: false,
           queuedAt: Date.now(),
+          revision: newRevision(),
         }))
       );
       scheduleSync();
@@ -1446,6 +1569,7 @@ async function applyRemoteNotebook(
       entityId: row.id,
       deleted: false,
       queuedAt: Date.now(),
+      revision: newRevision(),
     });
     scheduleSync();
     batchEmit("notebooks", "update", [row.id]);
@@ -1472,6 +1596,10 @@ async function applyRemoteAttachment(
     await db.attachments.delete(row.id);
     await db.outbox.delete(`attachment:${row.id}`);
     batchEmit("attachments", "delete", [row.id]);
+    // Storage 兜底清理：墓碑可能来自服务端级联（笔记软删触发器）而非任何
+    // 设备的 push——push 侧的清理（pushAttachment）不会发生。对象已不存在时
+    // remove 是幂等 no-op，与 push 侧并发执行也安全。
+    void removeAttachmentStorage(row).catch(() => {});
     return;
   }
   const local = await db.attachments.get(row.id);
@@ -1506,9 +1634,36 @@ async function applyRemoteAttachment(
 
 // ---------- 附件 blob 懒下载 ----------
 
+/** 拉取到的附件墓碑的 Storage 兜底清理（幂等；失败仅告警，不影响 pull） */
+async function removeAttachmentStorage(row: RemoteAttachment): Promise<void> {
+  const sb = getSupabase();
+  const userId = state.userId ?? row.user_id;
+  if (!sb || !userId) return;
+  const path = `${userId}/${row.note_id}/${row.id}.${attachmentExt(row.mime)}`;
+  try {
+    await sb.storage.from("note-images").remove([path]);
+  } catch (err) {
+    console.warn("attachment storage cleanup failed (pull):", path, err);
+  }
+}
+
 const BLOB_DOWNLOAD_MAX_CONCURRENT = 3;
+/** 单次下载超时：无超时的挂起 fetch 会永久占住并发槽，网络假死时
+ *  懒下载队列整体卡死（3 槽全挂后所有附件图停在「懒下载中」） */
+const BLOB_DOWNLOAD_TIMEOUT_MS = 30_000;
 const blobDownloadQueued = new Set<string>();
 let blobDownloadsInFlight = 0;
+
+/** 带超时的 fetch：超时 abort，让并发槽及时释放走重试 */
+async function fetchWithTimeout(url: string): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), BLOB_DOWNLOAD_TIMEOUT_MS);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** 本地缺 blob 的附件：按确定性公开 URL 下载回填（渲染触发，队列去重限流） */
 function queueBlobDownload(id: string): void {
@@ -1537,6 +1692,8 @@ async function downloadBlobForAttachment(id: string): Promise<void> {
     const sb = getSupabase();
     const userId = state.userId;
     if (!sb || !userId) return;
+    // 引擎已停止（清除本机数据）：回填写入会让 Dexie 重开正被删除的库
+    if (engineStopped) return;
     const record = await db.attachments.get(id);
     if (!record || record.blob) return;
 
@@ -1547,13 +1704,13 @@ async function downloadBlobForAttachment(id: string): Promise<void> {
       .from("note-images")
       .createSignedUrl(path, 60);
     if (error || !data) return;
-    let res = await fetch(data.signedUrl);
+    let res = await fetchWithTimeout(data.signedUrl);
     if (!res.ok) {
       const retry = await sb.storage
         .from("note-images")
         .createSignedUrl(path, 60);
       if (retry.error || !retry.data) return;
-      res = await fetch(retry.data.signedUrl);
+      res = await fetchWithTimeout(retry.data.signedUrl);
     }
     if (!res.ok) return; // 仍失败：等下次渲染触发重试
     const blob = await res.blob();
@@ -1561,6 +1718,7 @@ async function downloadBlobForAttachment(id: string): Promise<void> {
 
     const latest = await db.attachments.get(id);
     if (!latest || latest.blob) return; // 已被删除/并发回填
+    if (engineStopped) return; // 下载期间引擎被停止：放弃回填
     // 只回填二进制、元数据不变：抑制 outbox 入队，避免一次空转的服务端写入
     localAttachmentWrite = true;
     try {

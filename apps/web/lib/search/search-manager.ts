@@ -73,6 +73,9 @@ class SearchManager {
   private lastSync = 0;
   /** 已入索引的笔记 id（内存维护，配合 discard 幂等删除） */
   private indexedIds = new Set<string>();
+  /** stop() 后置位：索引维护与持久化全部静默（清除本机数据场景） */
+  private stopped = false;
+  private pagehideHandler: (() => void) | null = null;
 
   /**
    * 延迟持久化。索引 toJSON 是全量序列化（中文 bigram 索引体积可观），
@@ -88,6 +91,19 @@ class SearchManager {
       this.initPromise = this.initialize();
     }
     return this.initPromise;
+  }
+
+  /**
+   * 停止索引维护与持久化（清除本机数据前调用）：30s 防抖落盘与事件回调
+   * 若在 db.delete() 期间触发，会让 Dexie 自动重开正被删除的库。
+   */
+  stop(): void {
+    this.stopped = true;
+    this.schedulePersist.cancel();
+    if (this.pagehideHandler && typeof window !== "undefined") {
+      window.removeEventListener("pagehide", this.pagehideHandler);
+      this.pagehideHandler = null;
+    }
   }
 
   private async initialize(): Promise<void> {
@@ -126,7 +142,8 @@ class SearchManager {
     this.subscribeChanges();
     // 页面隐藏/关闭前尽量落盘
     if (typeof window !== "undefined") {
-      window.addEventListener("pagehide", () => void this.persist());
+      this.pagehideHandler = () => void this.persist();
+      window.addEventListener("pagehide", this.pagehideHandler);
     }
   }
 
@@ -197,6 +214,7 @@ class SearchManager {
     if (this.subscribed) return;
     this.subscribed = true;
     subscribe("notes", (event) => {
+      if (this.stopped) return;
       if (event.type === "delete") {
         for (const id of event.ids) {
           if (this.indexedIds.has(id)) {
@@ -242,7 +260,7 @@ class SearchManager {
   }
 
   private async persist(): Promise<void> {
-    if (!this.index) return;
+    if (this.stopped || !this.index) return;
     try {
       await db.meta.bulkPut([
         { key: INDEX_META_KEY, value: this.index.toJSON() },

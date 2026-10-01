@@ -141,6 +141,37 @@ create trigger attachments_note_owner_check
   before insert or update of note_id, user_id on public.attachments
   for each row execute function public.assert_attachment_note_owner();
 
+-- ---------- 笔记软删级联附件墓碑 ----------
+-- notes 软删时把其附件行一并打上同时间戳墓碑（否则附件只在发起删除的
+-- 设备上被客户端推平，该设备离线/清数据即成永久孤儿）；笔记复活时撤回
+-- 这批级联墓碑（按 deleted_at 等值识别，期间真删的附件不受影响）。
+-- Storage 文件由客户端 pull 到附件墓碑时兜底清理（幂等）。
+create or replace function public.tombstone_attachments_on_note_delete()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+begin
+  if old.deleted_at is null and new.deleted_at is not null then
+    update public.attachments
+       set deleted_at = new.deleted_at
+     where note_id = new.id
+       and deleted_at is null;
+  elsif old.deleted_at is not null and new.deleted_at is null then
+    update public.attachments
+       set deleted_at = null
+     where note_id = new.id
+       and deleted_at = old.deleted_at;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists notes_soft_delete_cascade_attachments on public.notes;
+create trigger notes_soft_delete_cascade_attachments
+  after update of deleted_at on public.notes
+  for each row execute function public.tombstone_attachments_on_note_delete();
+
 -- ---------- Realtime：增量拉取与远端变更推送 ----------
 do $$
 begin

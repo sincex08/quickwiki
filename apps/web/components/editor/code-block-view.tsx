@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { NodeViewContent, NodeViewWrapper, type NodeViewProps } from "@tiptap/react";
 import { Check, Copy } from "lucide-react";
 import { CODE_LANGUAGES, languageLabel } from "@/lib/code-languages";
@@ -13,12 +13,21 @@ import { CODE_LANGUAGES, languageLabel } from "@/lib/code-languages";
 export function CodeBlockView({ node, updateAttributes }: NodeViewProps) {
   const language = (node.attrs.language as string) || "plaintext";
   const [copied, setCopied] = useState(false);
+  const copiedTimerRef = useRef<number | null>(null);
+
+  // 卸载时清理「已复制」复位定时器，避免卸载后 setState
+  useEffect(
+    () => () => {
+      if (copiedTimerRef.current !== null) clearTimeout(copiedTimerRef.current);
+    },
+    []
+  );
 
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(node.textContent);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      copiedTimerRef.current = window.setTimeout(() => setCopied(false), 1500);
     } catch {
       // 剪贴板不可用（权限/非安全上下文）：静默失败，不打断编辑
     }

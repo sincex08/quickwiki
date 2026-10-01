@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input";
 /**
  * URL 规范化与安全白名单：
  * - 允许 http(s): / mailto: / tel: / 相对路径（# 或 / 开头）
- * - 无协议地址自动补 https://
+ * - 无协议地址自动补 https://（含 host:port 形式，如 example.com:8080）
  * - 拒绝 javascript: / data: / vbscript: 及其他未知协议
  * 非法返回 null。
  */
@@ -24,7 +24,10 @@ export function normalizeUrl(raw: string): string | null {
   if (/^(javascript|data|vbscript):/i.test(u)) return null;
   if (/^(https?:|mailto:|tel:)/i.test(u)) return u;
   if (/^(#|\/)/.test(u)) return u;
-  if (u.includes(":")) return null;
+  if (u.includes(":")) {
+    // host:port（可带路径）按无协议地址补 https；其余带冒号形式按未知协议拒绝
+    return /^[\w.-]+:\d{1,5}([/?#][^\s]*)?$/.test(u) ? `https://${u}` : null;
+  }
   return `https://${u}`;
 }
 

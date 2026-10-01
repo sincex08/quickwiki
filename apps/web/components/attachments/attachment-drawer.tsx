@@ -47,6 +47,8 @@ import {
 import {
   attachmentSignedUrl,
   registerBlobUrl,
+  acquireObjectUrl,
+  releaseObjectUrl,
   useAttachmentImgSrc,
 } from "@/lib/attachments/resolve";
 import {
@@ -232,7 +234,10 @@ export function AttachmentDrawer({
     }
     if (preview.blob) {
       setPreviewSrc(registerBlobUrl(preview.id, preview.blob));
-      return;
+      // 持有引用：防止 releaseAllObjectUrls（切换笔记）或 LRU 淘汰
+      // revoke 掉正在预览的 URL；关闭预览/换目标时配对释放
+      acquireObjectUrl(preview.id);
+      return () => releaseObjectUrl(preview.id);
     }
     let active = true;
     void attachmentSignedUrl(preview).then((url) => {

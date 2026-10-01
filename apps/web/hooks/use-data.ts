@@ -134,16 +134,19 @@ export function useNote(id: string | null) {
     setLoaded(false);
     const load = () => {
       noteRepo.findById(id).then((n) => {
-        if (seqRef.current !== seq) return;
+        // 卸载后不再 setState（seq 校验只防切笔记后的陈旧回写，不防卸载）
+        if (!active || seqRef.current !== seq) return;
         setNote(n);
         setLoading(false);
         setLoaded(true);
       });
     };
     const scheduleLoad = debounce(load, EVENT_MERGE_MS);
+    let active = true;
     load();
     const unsub = subscribe("notes", scheduleLoad);
     return () => {
+      active = false;
       scheduleLoad.cancel();
       unsub();
     };
