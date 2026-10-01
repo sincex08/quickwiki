@@ -520,6 +520,66 @@ describe("笔记本嵌套：parent_id 同步", () => {
     expect((await db.notebooks.get("p1"))!.parentId).toBeNull();
   });
 
+  // 与 notes 侧（applyRemoteNote）同口径的两条判定：
+  // 1) 本地较新且无待推送条目 → 本地胜出，不被远端旧行回退
+  // 2) dead 条目（推送已放弃）不压制比自己新的远端更新
+  it("本地较新且无待推送条目时本地胜出，不被远端旧行覆盖", async () => {
+    await db.notebooks.put({
+      id: "nb9",
+      name: "本地新版",
+      color: "#f00",
+      parentId: null,
+      createdAt: 1,
+      updatedAt: Date.now(),
+    });
+    tables.notebooks.push(
+      remoteNotebook({
+        id: "nb9",
+        name: "远端旧名",
+        updated_at: clock.at(2000),
+        server_updated_at: clock.at(2000),
+      })
+    );
+
+    await syncNow();
+
+    expect((await db.notebooks.get("nb9"))!.name).toBe("本地新版");
+  });
+
+  it("dead 条目不压制比自己新的远端更新", async () => {
+    await db.notebooks.put({
+      id: "nb10",
+      name: "本地旧版",
+      color: "#f00",
+      parentId: null,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    await db.outbox.put({
+      key: "notebook:nb10",
+      kind: "notebook",
+      entityId: "nb10",
+      deleted: false,
+      queuedAt: 1,
+      attempts: 10,
+      dead: true,
+    });
+    tables.notebooks.push(
+      remoteNotebook({
+        id: "nb10",
+        name: "远端新名",
+        updated_at: clock.at(9000),
+        server_updated_at: clock.at(9000),
+      })
+    );
+
+    await syncNow();
+
+    expect((await db.notebooks.get("nb10"))!.name).toBe("远端新名");
+    // dead 条目保留，等待人工处置
+    expect((await db.outbox.get("notebook:nb10"))!.dead).toBe(true);
+  });
+
   it("远端 LWW 造环：apply 侧断环并入队推平", async () => {
     // 本地：a 挂在 b 下；远端覆盖 b 挂到 a 下 → a→b→a 成环
     await db.notebooks.put({

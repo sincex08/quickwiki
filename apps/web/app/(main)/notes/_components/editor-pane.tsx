@@ -191,6 +191,30 @@ export function EditorPane() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 关闭标签页 / 移动端切后台 / 锁屏时立即落盘防抖中的草稿：
+  // 这些路径不会触发组件卸载 cleanup，1s 防抖窗口内的最后一次输入会随
+  // 页面冻结或销毁而丢失。visibilitychange 与 pagehide 可能连发，flush 均
+  // 以 pendingRef 清空为准，天然幂等。
+  useEffect(() => {
+    const flushNow = () => {
+      debouncedSave.cancel();
+      flushPending();
+      debouncedTitleSave.cancel();
+      flushTitlePending();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") flushNow();
+    };
+    window.addEventListener("pagehide", flushNow);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("pagehide", flushNow);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+    // 首个渲染闭包里的 flush 系列只读 ref 与稳定依赖，绑定一次即可
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleChange = (markdown: string) => {
     // 写入目标以 note 自身 id 为准，避免 useNote 未跟随时用旧 activeNoteId 串写
     const id = note?.id ?? activeNoteId;

@@ -1413,10 +1413,13 @@ async function applyRemoteNotebook(
   if (!force) {
     const local = await db.notebooks.get(row.id);
     const remoteUpdated = new Date(row.updated_at).getTime();
-    if (local && local.updatedAt > remoteUpdated) {
-      const pending = await db.outbox.get(`notebook:${row.id}`);
-      if (pending) return;
-    }
+    // 与 notes 侧（applyRemoteNote）同口径：
+    // 1) 有未推送的本地改动 → 本地胜出，等 push 处理，避免绕过冲突检测；
+    // 2) dead 条目表示推送已放弃（毒丸隔离），不再压制远端更新——
+    //    否则该笔记本本地改动永不推送、远端更新永不应用，永久分叉。
+    const pending = await db.outbox.get(`notebook:${row.id}`);
+    if (pending && !pending.dead) return;
+    if (local && local.updatedAt > remoteUpdated) return;
   }
   const nb: Notebook = {
     id: row.id,

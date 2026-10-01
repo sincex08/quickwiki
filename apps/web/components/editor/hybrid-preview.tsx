@@ -2,6 +2,7 @@
 
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -32,6 +33,14 @@ function childrenToText(children: ReactNode): string {
   }
   return children.map((c) => childrenToText(c as ReactNode)).join("");
 }
+
+/**
+ * 外部内容同步的延迟校验窗口：自动保存落盘后事件回读期间，父组件的
+ * latestContent 会短暂回退到旧值（先清 pendingRef、note.content 后到位），
+ * 立即重置会把本组件刚提交的内容误当成「外部变更」还原掉。300ms 后仍然
+ * 不一致才认定为真正的外部改写（云同步回写、附件抽屉删引用等）。
+ */
+const EXTERNAL_CONTENT_SYNC_MS = 300;
 
 /** 标题渲染：写入稳定锚点 id，[toc] 与大纲跳转依赖它 */
 function headingRenderer(Tag: "h1" | "h2" | "h3") {
@@ -148,6 +157,23 @@ export function HybridPreview({
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [draft, setDraft] = useState("");
 
+  // 最近一次本组件发出的完整文本：content 与它不一致即为外部改写。
+  // blocks 只在挂载时初始化，若不同步外部变更（云同步回写、附件抽屉删引用），
+  // 下一次块提交 / 勾选任务会用旧 blocks 重组全文写回，把外部编辑整体覆盖掉。
+  const lastEmittedRef = useRef(content);
+  useEffect(() => {
+    if (content === lastEmittedRef.current) return;
+    const timer = setTimeout(() => {
+      if (content === lastEmittedRef.current) return;
+      lastEmittedRef.current = content;
+      // 块编辑中收到外部变更：退出编辑并采用外部内容——宁可丢弃块草稿，
+      // 也不能让 commit 用旧 blocks 把外部改写整体覆盖回去
+      setEditingIndex(null);
+      setBlocks(splitMarkdownBlocks(content));
+    }, EXTERNAL_CONTENT_SYNC_MS);
+    return () => clearTimeout(timer);
+  }, [content]);
+
   const startEdit = (index: number) => {
     setDraft(blocks[index]);
     setEditingIndex(index);
@@ -161,7 +187,9 @@ export function HybridPreview({
       .map((b) => b.replace(/^\s+/, "").replace(/\s+$/, ""))
       .filter((b) => b !== "");
     setBlocks(normalized);
-    onChange(joinMarkdownBlocks(normalized));
+    const markdown = joinMarkdownBlocks(normalized);
+    lastEmittedRef.current = markdown;
+    onChange(markdown);
     setEditingIndex(null);
   };
 
@@ -199,7 +227,9 @@ export function HybridPreview({
         const cleaned = next
           .map((b) => b.replace(/^\s+/, "").replace(/\s+$/, ""))
           .filter((b) => b !== "");
-        onChange(joinMarkdownBlocks(cleaned));
+        const markdown = joinMarkdownBlocks(cleaned);
+        lastEmittedRef.current = markdown;
+        onChange(markdown);
         return next;
       });
     },
