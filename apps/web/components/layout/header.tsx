@@ -314,7 +314,9 @@ export function Header({ onNewNote, onOpenSidebar }: HeaderProps) {
   };
 
   return (
-    <header className="flex h-14 shrink-0 items-center gap-1.5 border-b bg-background px-3 md:gap-2 md:px-4">
+    // 顶部叠加安全区：PWA standalone + 刘海屏下 header 不被状态栏遮挡
+    // （高度随之增长，非刘海设备保持 3.5rem 不变）
+    <header className="flex h-[calc(3.5rem+env(safe-area-inset-top))] shrink-0 items-center gap-1.5 border-b bg-background px-3 pt-[env(safe-area-inset-top)] md:gap-2 md:px-4">
       {/* 移动端菜单按钮 */}
       <Button
         variant="ghost"

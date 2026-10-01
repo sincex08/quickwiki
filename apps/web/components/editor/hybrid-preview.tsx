@@ -85,7 +85,7 @@ function PreWithCopy({
             // 剪贴板不可用：静默失败
           }
         }}
-        className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-md border bg-background px-1.5 py-0.5 text-xs text-muted-foreground transition-opacity hover:text-foreground lg:opacity-0 lg:group-hover/pre:opacity-100"
+        className="hover-hide absolute right-2 top-2 z-10 flex items-center gap-1 rounded-md border bg-background px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground"
       >
         {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
         {copied ? "已复制" : "复制"}

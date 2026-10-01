@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import { useUIStore } from "@/stores/use-ui-store";
-import { useNoteActions } from "@/hooks/use-note-actions";
+import { useEffect } from "react";
+import { useUIStore, requestNewNoteConfirm } from "@/stores/use-ui-store";
 
 /** 全局快捷键在哪个断点以上启用（与 Tailwind md 一致；移动端无物理键盘） */
 function isDesktop(): boolean {
@@ -15,7 +14,7 @@ const MODE_CYCLE = ["edit", "source", "preview"] as const;
 /**
  * 全局键盘快捷键（桌面端）：
  * - Ctrl/Cmd+K  命令面板
- * - Ctrl/Cmd+N  新建笔记
+ * - Ctrl/Cmd+N  新建笔记（走落点确认流程，与顶部按钮 / FAB 一致）
  * - Ctrl/Cmd+F  聚焦搜索框（搜索框内监听 quickwiki:focus-search 事件）
  * - Ctrl/Cmd+S  立即保存（编辑器监听 quickwiki:flush-save 事件，flush 防抖草稿）
  * - Ctrl/Cmd+E  循环切换 编辑/源码/预览
@@ -24,11 +23,6 @@ const MODE_CYCLE = ["edit", "source", "preview"] as const;
  * 全部带 ctrl/meta 修饰，不会与普通打字冲突；Tiptap 自有的 Ctrl+B/I 等不经过这里。
  */
 export function useHotkeys(): void {
-  const actions = useNoteActions();
-  // 监听器只注册一次，回调经 ref 取最新值（actions 依赖 activeNoteId 等，会重建）
-  const actionsRef = useRef(actions);
-  actionsRef.current = actions;
-
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (!isDesktop()) return;
@@ -43,7 +37,7 @@ export function useHotkeys(): void {
             store.setCommandPaletteOpen(!store.commandPaletteOpen);
             return true;
           case "n":
-            void actionsRef.current.createNote();
+            requestNewNoteConfirm();
             return true;
           case "f":
             window.dispatchEvent(new CustomEvent("quickwiki:focus-search"));

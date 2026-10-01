@@ -4,7 +4,12 @@ import { X } from "lucide-react";
 import { useToastStore } from "@/stores/use-toast-store";
 import { cn } from "@/lib/utils";
 
-/** 全局 toast 容器：底部居中堆叠，3s 自动消失（store 内计时） */
+/**
+ * 全局 toast 容器：3s 自动消失（store 内计时）。
+ * 手机端挂在顶部（header 下方）——底部是 FAB（bottom-16）与统计栏，
+ * 「删除成功 · 撤销」这类 toast 在底部恰好盖住用户下一步最可能点的按钮；
+ * md+ 维持底部居中。
+ */
 export function Toaster() {
   const toasts = useToastStore((s) => s.toasts);
   const dismiss = useToastStore((s) => s.dismiss);
@@ -12,7 +17,7 @@ export function Toaster() {
   if (toasts.length === 0) return null;
 
   return (
-    <div className="pointer-events-none fixed bottom-20 left-1/2 z-[100] flex w-full max-w-sm -translate-x-1/2 flex-col items-center gap-2 px-4 md:bottom-8">
+    <div className="pointer-events-none fixed left-1/2 top-16 z-[100] flex w-full max-w-sm -translate-x-1/2 flex-col items-center gap-2 px-4 md:bottom-8 md:top-auto">
       {toasts.map((t) => (
         <div
           key={t.id}

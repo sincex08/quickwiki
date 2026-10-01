@@ -164,9 +164,9 @@ export function NoteCard({
           transition: swiping.current ? "none" : "transform 0.2s ease",
         }}
       >
-        {/* 操作菜单：桌面悬浮出现；移动端常驻（左滑区只放高频的置顶 / 删除，
-            顺序调整放这里，避免滑出区挤成一片） */}
-        <div className="absolute right-1 top-1 opacity-100 transition-opacity focus-within:opacity-100 group-hover:opacity-100 md:opacity-0 md:focus-within:opacity-100 md:group-hover:opacity-100">
+        {/* 操作菜单：桌面悬浮出现；触屏常驻（hover-hide 按媒体查询精确命中，
+            左滑区只放高频的置顶 / 删除，顺序调整放这里，避免滑出区挤成一片） */}
+        <div className="hover-hide absolute right-1 top-1 focus-within:opacity-100">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button

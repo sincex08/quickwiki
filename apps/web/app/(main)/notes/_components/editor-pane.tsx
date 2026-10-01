@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { MiniSwitch } from "@/components/common/mini-switch";
+import { Skeleton } from "@/components/ui/skeleton";
 import { LazyEditor, prefetchEditor } from "@/components/editor/lazy-editor";
 import { MarkdownSource } from "@/components/editor/markdown-source";
 import { HybridPreview } from "@/components/editor/hybrid-preview";
@@ -359,8 +360,24 @@ export function EditorPane() {
   }
 
   if (!note) {
-    // 仍在加载中（loaded=false）
-    return <div className="h-full" />;
+    // 仍在加载中（loaded=false）：骨架占位代替纯白，移动端重挂载回读
+    // IndexedDB 的间隙不再闪一帧空白
+    return (
+      <div className={cn("flex h-full flex-col", PANE_PX)}>
+        <div className="flex shrink-0 items-center gap-2 border-b py-2">
+          <Skeleton className="h-3 w-24" />
+        </div>
+        <div className="flex shrink-0 items-center border-b py-1.5">
+          <Skeleton className="h-6 w-2/5" />
+        </div>
+        <div className="flex-1 space-y-3 py-4">
+          <Skeleton className="h-4 w-11/12" />
+          <Skeleton className="h-4 w-3/4" />
+          <Skeleton className="h-4 w-5/6" />
+          <Skeleton className="h-4 w-1/2" />
+        </div>
+      </div>
+    );
   }
 
   // 模式切换不丢内容的关键：优先取防抖期内未落盘的最新内容，
@@ -682,7 +699,7 @@ export function EditorPane() {
           打字/标题输入触发的父级重渲染不再连带重算字数 */}
       <div
         className={cn(
-          "hidden shrink-0 items-center justify-end border-t py-0.5 text-[11px] text-muted-foreground md:flex",
+          "hidden shrink-0 items-center justify-end border-t pt-0.5 pb-[calc(0.125rem+env(safe-area-inset-bottom))] text-[11px] text-muted-foreground md:flex",
           PANE_PX
         )}
       >

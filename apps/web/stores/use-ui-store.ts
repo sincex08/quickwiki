@@ -23,6 +23,18 @@ function readHybridDefault(): boolean {
 const MOBILE_MAX_WIDTH = 767;
 
 /**
+ * 请求「新建笔记」落点确认的全局事件：顶部按钮、Ctrl+N、移动端 FAB、
+ * 空态按钮共用。落点都是推断出来的，统一走主布局的确认弹窗（明确写出
+ * 会建到哪个笔记本），见 app/(main)/layout 的监听。
+ */
+export const REQUEST_NEW_NOTE_EVENT = "quickwiki:request-new-note";
+
+/** 触发新建笔记落点确认（供各入口调用，替代直接 createNote） */
+export function requestNewNoteConfirm(): void {
+  window.dispatchEvent(new CustomEvent(REQUEST_NEW_NOTE_EVENT));
+}
+
+/**
  * 打开 / 切换笔记时的默认编辑器模式：手机端优先「预览」（读优先），
  * 桌面端「编辑」（写优先）。服务端渲染 / 异常时兜底为 "edit"。
  */

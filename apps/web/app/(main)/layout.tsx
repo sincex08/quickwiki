@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Header } from "@/components/layout/header";
 import { RequireAuth } from "@/components/layout/require-auth";
 import { SidebarContent } from "@/components/layout/sidebar";
@@ -12,7 +12,7 @@ import { useNotebooks } from "@/hooks/use-data";
 import { useNoteActions } from "@/hooks/use-note-actions";
 import { useHotkeys } from "@/hooks/use-hotkeys";
 import { buildNotebookPaths } from "@/lib/notebook-path";
-import { useUIStore } from "@/stores/use-ui-store";
+import { useUIStore, REQUEST_NEW_NOTE_EVENT } from "@/stores/use-ui-store";
 
 /**
  * 主应用外壳：
@@ -61,6 +61,17 @@ export default function MainLayout({
       : "未分类"
     : "";
 
+  // FAB / Ctrl+N 经同一事件接入此流程，三入口行为一致：
+  // 落点都是推断出来的，确认弹窗明确写出会建到哪个笔记本（含完整路径）
+  const requestNewNoteRef = useRef(requestNewNote);
+  requestNewNoteRef.current = requestNewNote;
+  useEffect(() => {
+    const onRequest = () => void requestNewNoteRef.current();
+    window.addEventListener(REQUEST_NEW_NOTE_EVENT, onRequest);
+    return () =>
+      window.removeEventListener(REQUEST_NEW_NOTE_EVENT, onRequest);
+  }, []);
+
   return (
     <RequireAuth>
       <div className="flex h-full">
@@ -85,13 +96,15 @@ export default function MainLayout({
           <main className="min-h-0 flex-1">{children}</main>
         </div>
 
-        {/* 顶部「新建笔记」的落点确认：明确写出会建到哪个笔记本（含完整路径） */}
+        {/* 顶部「新建笔记」的落点确认：明确写出会建到哪个笔记本（含完整路径）。
+            回车直接确认（确认按钮初始聚焦），高频安全操作不必再按一次 Tab */}
         <ConfirmDialog
           open={pendingNewNote !== null}
           title="新建笔记"
           description={`将在「${pendingTargetLabel}」下创建新笔记，创建后直接进入编辑。`}
           confirmLabel="创建"
           destructive={false}
+          confirmAutoFocus
           onConfirm={confirmNewNote}
           onCancel={() => setPendingNewNote(null)}
         />

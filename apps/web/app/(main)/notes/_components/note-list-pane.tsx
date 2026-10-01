@@ -13,7 +13,7 @@ import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { useNoteDrag } from "@/components/layout/use-note-drag";
 import { useNotebooks, useNotes, useNotesIndex } from "@/hooks/use-data";
 import { useNoteActions } from "@/hooks/use-note-actions";
-import { useUIStore } from "@/stores/use-ui-store";
+import { useUIStore, requestNewNoteConfirm } from "@/stores/use-ui-store";
 import { cn } from "@/lib/utils";
 
 /** 列表底部「仅标题」切换：开启后卡片只显示标题，列表栏随之收窄 */
@@ -106,12 +106,12 @@ function FilterChips() {
 export function NoteListPane() {
   const notebookFilter = useUIStore((s) => s.notebookFilter);
   const tagFilter = useUIStore((s) => s.tagFilter);
+  const setTagFilter = useUIStore((s) => s.setTagFilter);
   const activeNoteId = useUIStore((s) => s.activeNoteId);
   const openNote = useUIStore((s) => s.openNote);
   const setNotebookFilter = useUIStore((s) => s.setNotebookFilter);
 
   const {
-    createNote,
     deleteNote,
     togglePin,
     moveNote,
@@ -198,17 +198,30 @@ export function NoteListPane() {
             ))}
           </div>
         ) : items.length === 0 ? (
-          // 有子笔记本时不再喊「还没有笔记」：容器非空，只是自己没有直属笔记
+          // 有子笔记本时不再喊「还没有笔记」：容器非空，只是自己没有直属笔记；
+          // 标签过滤态下新建会落进推断的笔记本（不受标签约束），文案不再引导创建
           hasChildNotebooks ? (
             <div className="px-3 py-6 text-center text-xs text-muted-foreground">
               该笔记本下暂无直属笔记
+            </div>
+          ) : tagFilter ? (
+            <div className="px-3 py-6 text-center text-xs text-muted-foreground">
+              没有打过「#{tagFilter}」标签的笔记，
+              <button
+                type="button"
+                className="text-primary hover:underline"
+                onClick={() => setTagFilter(null)}
+              >
+                清除标签过滤
+              </button>
+              查看全部
             </div>
           ) : (
             <EmptyState
               title="还没有笔记"
               description="记录你的第一个想法，支持 Markdown 快捷输入"
               actionLabel="新建笔记"
-              onAction={() => void createNote()}
+              onAction={requestNewNoteConfirm}
             />
           )
         ) : (
@@ -236,9 +249,9 @@ export function NoteListPane() {
         )}
       </div>
 
-      {/* 列表底部统计 + 仅标题切换 */}
+      {/* 列表底部统计 + 仅标题切换（底部让位全面屏 Home 指示条） */}
       {total > 0 && (
-        <div className="flex items-center justify-between border-t px-3 py-1.5 text-xs text-muted-foreground">
+        <div className="flex items-center justify-between border-t px-3 pt-1.5 pb-[calc(0.375rem+env(safe-area-inset-bottom))] text-xs text-muted-foreground">
           <span>共 {total} 篇笔记</span>
           <TitleOnlyToggle />
         </div>
@@ -246,10 +259,12 @@ export function NoteListPane() {
 
       {/* 移动端新建笔记 FAB。
           抬高到统计栏（含「仅标题」）之上：此前 bottom-6 正好压在统计栏右侧，
-          把「仅标题」盖住且抢走它的点击（2026-09-19 实测）。 */}
+          把「仅标题」盖住且抢走它的点击（2026-09-19 实测）；
+          右/下再叠加安全区，避免贴住 Home 指示条与横屏刘海。
+          落点确认与顶部按钮/Ctrl+N 走同一事件流程（三入口行为一致）。 */}
       <Button
-        className="fixed bottom-16 right-4 z-40 h-[52px] w-[52px] rounded-full p-0 shadow-lg md:hidden"
-        onClick={() => void createNote()}
+        className="fixed bottom-[calc(4rem+env(safe-area-inset-bottom))] right-[calc(1rem+env(safe-area-inset-right))] z-40 h-[52px] w-[52px] rounded-full p-0 shadow-lg md:hidden"
+        onClick={requestNewNoteConfirm}
         aria-label="新建笔记"
         title="新建笔记"
       >

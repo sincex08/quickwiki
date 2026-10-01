@@ -28,6 +28,9 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
+  // Android 键盘弹出时压缩布局高度而非整页上推，编辑器可见区域不被遮挡；
+  // iOS Safari 目前忽略该字段（后续可用 visualViewport 适配）
+  interactiveWidget: "resizes-content",
 };
 
 /** 防止暗色模式首屏闪烁：在 HTML 解析阶段同步应用主题 */

@@ -4,7 +4,6 @@ import { useMemo, useState } from "react";
 import { X } from "lucide-react";
 import { normalizeTag } from "@/lib/utils";
 import { TagBadge } from "@/components/common/tag-badge";
-import { ConfirmDialog } from "@/components/common/confirm-dialog";
 
 interface TagEditorProps {
   tags: string[];
@@ -16,8 +15,9 @@ interface TagEditorProps {
 }
 
 /**
- * 编辑器内的标签编辑：回车/逗号添加；退格不删除，仅点 × 并二次确认后移除。
- * 输入时按已有标签给出补全建议：前缀匹配优先、其次包含，排除已有标签，最多 8 条。
+ * 编辑器内的标签编辑：回车/逗号添加；× 直接移除（仅从当前笔记摘除，
+ * 完全可逆且不影响其他笔记，无需二次确认）。输入时按已有标签给出
+ * 补全建议：前缀匹配优先、其次包含，排除已有标签，最多 8 条。
  */
 export function TagEditor({
   tags,
@@ -26,7 +26,6 @@ export function TagEditor({
   suggestions = [],
 }: TagEditorProps) {
   const [input, setInput] = useState("");
-  const [pendingRemove, setPendingRemove] = useState<string | null>(null);
   const /** 建议高亮下标（-1 = 未选，Enter 提交原始输入） */
     [highlight, setHighlight] = useState(-1);
 
@@ -62,11 +61,8 @@ export function TagEditor({
     commit(highlight >= 0 && highlight < matches.length ? matches[highlight] : input);
   };
 
-  const confirmRemove = () => {
-    if (pendingRemove) {
-      onChange(tags.filter((t) => t !== pendingRemove));
-    }
-    setPendingRemove(null);
+  const removeTag = (tag: string) => {
+    onChange(tags.filter((t) => t !== tag));
   };
 
   return (
@@ -84,7 +80,7 @@ export function TagEditor({
             className="rounded-full p-0.5 hover:bg-background/60"
             // 不让按钮抢走输入框焦点，避免半输入的文本在失焦时被误提交为标签
             onMouseDown={(e) => e.preventDefault()}
-            onClick={() => setPendingRemove(tag)}
+            onClick={() => removeTag(tag)}
           >
             <X className="h-3 w-3" />
           </button>
@@ -169,14 +165,6 @@ export function TagEditor({
           </ul>
         )}
       </div>
-      <ConfirmDialog
-        open={pendingRemove !== null}
-        title={`移除标签「${pendingRemove}」？`}
-        description="该标签仅从当前笔记移除，不影响其他笔记，可随时重新添加。"
-        confirmLabel="移除"
-        onConfirm={confirmRemove}
-        onCancel={() => setPendingRemove(null)}
-      />
     </div>
   );
 }

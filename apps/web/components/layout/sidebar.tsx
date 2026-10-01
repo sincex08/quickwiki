@@ -197,8 +197,8 @@ function NoteRow({
         </span>
         <span
           className={cn(
-            "ml-auto hidden shrink-0 pl-2 text-[11px] text-muted-foreground/80 transition-opacity md:inline",
-            !active && "lg:opacity-0 lg:group-hover:opacity-100"
+            "ml-auto hidden shrink-0 pl-2 text-[11px] text-muted-foreground/80 md:inline",
+            !active && "hover-hide"
           )}
         >
           {formatDistanceToNowStrict(note.updatedAt, {
@@ -213,7 +213,7 @@ function NoteRow({
             type="button"
             data-no-drag
             aria-label={`笔记「${note.title}」操作`}
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-opacity hover:bg-background hover:text-foreground lg:opacity-0 lg:group-hover:opacity-100 lg:focus:opacity-100"
+            className="hover-hide flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-background hover:text-foreground"
           >
             <MoreHorizontal className="h-4 w-4" />
           </button>
@@ -471,7 +471,7 @@ function NotebookNode({
               type="button"
               aria-label={`笔记本 ${notebook.name} 操作`}
               title={`笔记本「${notebook.name}」：新建笔记 / 重命名 / 删除`}
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-opacity hover:bg-background hover:text-foreground lg:opacity-0 lg:group-hover:opacity-100 lg:focus:opacity-100"
+              className="hover-hide flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-background hover:text-foreground"
             >
               <MoreHorizontal className="h-4 w-4" />
             </button>

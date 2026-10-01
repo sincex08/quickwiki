@@ -22,6 +22,11 @@ interface ConfirmDialogProps {
    * 新建 / 移动等普通操作传 false，用主色按钮（红色会让人以为要删东西）。
    */
   destructive?: boolean;
+  /**
+   * 确认按钮是否初始聚焦（回车直接确认）。默认聚焦「取消」——删除类
+   * 操作宁可多按一下；落点确认这类高频安全操作传 true 提速。
+   */
+  confirmAutoFocus?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -33,6 +38,7 @@ export function ConfirmDialog({
   description,
   confirmLabel = "确认",
   destructive = true,
+  confirmAutoFocus = false,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
@@ -46,6 +52,7 @@ export function ConfirmDialog({
         <AlertDialogFooter>
           <AlertDialogCancel>取消</AlertDialogCancel>
           <AlertDialogAction
+            autoFocus={confirmAutoFocus}
             className={cn(
               destructive &&
                 "bg-destructive text-destructive-foreground hover:bg-destructive/90"

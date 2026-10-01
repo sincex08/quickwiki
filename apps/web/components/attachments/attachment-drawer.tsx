@@ -258,8 +258,9 @@ export function AttachmentDrawer({
         hideClose
         className={cn(
           "flex flex-col gap-0 p-0",
+          // 底部抽屉让位 Home 指示条（viewportFit: cover 下内容延伸到其下）
           isMobile
-            ? "h-[85vh] rounded-t-xl"
+            ? "h-[85vh] rounded-t-xl pb-[env(safe-area-inset-bottom)]"
             : "w-[420px] sm:max-w-[85vw] md:w-[min(420px,60vw)] md:max-w-none lg:w-[420px]"
         )}
         onDragOver={(e) => {
@@ -437,8 +438,9 @@ export function AttachmentDrawer({
                         </span>
                       )}
                     </div>
-                    {/* 卡片菜单 */}
-                    <div className="absolute right-1 top-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 max-md:opacity-100">
+                    {/* 卡片菜单：触屏常驻（原 max-md 断点让 iPad 竖屏 768-1023px 区间
+                        按钮完全隐形，改为按 hover 能力精确判定） */}
+                    <div className="hover-hide absolute right-1 top-1 focus-within:opacity-100">
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button

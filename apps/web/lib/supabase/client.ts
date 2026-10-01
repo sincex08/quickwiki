@@ -2,7 +2,10 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 /**
  * Supabase 客户端（安全初始化）。
- * 未配置环境变量时返回 null，应用保持完全本地可用（同步功能禁用）。
+ * 未配置环境变量时返回 null：RequireAuth 会把用户引到登录页，登录页展示
+ * 「云同步未配置」说明——应用当前不提供无云端的纯本地模式（登录门禁依赖
+ * Supabase Auth），需本地使用请在构建时配置环境变量并登录。
+ * 数据仍以本机 IndexedDB 为主存储，云端是同步对等端。
  * 静态导出下 NEXT_PUBLIC_* 在构建时内联：填写 .env.local 后需重新构建/重启 dev。
  */
 

@@ -59,6 +59,38 @@
   }
 }
 
+@layer components {
+  /* ===== 触屏可见性：hover 才隐藏的行内控件（行尾菜单、复制按钮等） =====
+     无 hover 能力的设备（手机 / 平板，含 iPad 横屏 ≥1024px）上常显；
+     有 hover 的设备默认隐藏，悬停父级 .group（含命名组 group/xx）或键盘
+     聚焦时显现。比 lg:/md: 断点精确——按宽度断点会让大屏触屏设备出现
+     「隐形但可点」的按钮，与帮助页「触屏菜单常显」的承诺冲突。 */
+  .hover-hide {
+    @apply transition-opacity;
+  }
+  @media (hover: hover) {
+    .hover-hide {
+      opacity: 0;
+    }
+    .group:hover .hover-hide,
+    [class*="group/"]:hover .hover-hide,
+    .hover-hide:focus-visible,
+    .hover-hide:focus {
+      opacity: 1;
+    }
+  }
+
+  /* ===== 全面屏安全区 =====
+     viewportFit: cover 下内容延伸到刘海 / Home 指示条之下，
+     底栏、悬浮件（FAB / toast）需让位。 */
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .pt-safe {
+    padding-top: env(safe-area-inset-top);
+  }
+}
+
 /* ===== Tiptap 编辑器样式 ===== */
 /* 正文两侧留白：与头部 / 标题 / 标签行共用同一条左边缘（见 editor-pane 的 PANE_PX） */
 .tiptap {

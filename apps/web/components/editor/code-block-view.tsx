@@ -37,7 +37,7 @@ export function CodeBlockView({ node, updateAttributes }: NodeViewProps) {
     <NodeViewWrapper className="group/code relative">
       <div
         contentEditable={false}
-        className="absolute right-2 top-1.5 z-10 flex items-center gap-1 transition-opacity focus-within:opacity-100 lg:opacity-0 lg:group-hover/code:opacity-100"
+        className="hover-hide absolute right-2 top-1.5 z-10 flex items-center gap-1 focus-within:opacity-100"
       >
         <select
           value={CODE_LANGUAGES.some((l) => l.id === language) ? language : ""}
