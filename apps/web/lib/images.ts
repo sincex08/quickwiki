@@ -221,6 +221,50 @@ function isPassthroughType(file: File): boolean {
   return file.type === "image/gif" || file.type === "image/svg+xml";
 }
 
+/**
+ * SVG 安全净化：存储前剥离可执行 / 可外联内容。
+ *
+ * 当前渲染链路已是安全的（`<img>` 加载不执行脚本、TipTap `html:false`、
+ * ReactMarkdown 不渲染裸 HTML），此处是纵深防御——一旦未来引入「导出 HTML」
+ * 或任何内联渲染路径，存量 SVG 会立刻变成存储型 XSS 载体。
+ * 策略：删除 script / foreignObject / iframe / embed / object 等元素，
+ * 清掉 on* 事件属性与 javascript:/data:text/html 协议引用。
+ * 纯正则不做完整 XML 解析：对 SVG 这种自包含小文件足够，且不引入依赖。
+ */
+function sanitizeSvg(svg: string): string {
+  return svg
+    // 可执行 / 可嵌入外部内容的元素（成对标签与自闭合都覆盖）
+    .replace(
+      /<\s*(script|foreignObject|iframe|embed|object|use|animate|set)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi,
+      ""
+    )
+    .replace(/<\s*(script|foreignObject|iframe|embed|object|use|animate|set)\b[^>]*\/?>/gi, "")
+    // 事件属性：onclick / onload / onerror ...（含引号包裹形式）
+    .replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    // 协议型引用：href / xlink:href / src / style 中的 javascript: 与 data:text/html
+    .replace(
+      /(href|xlink:href|src)\s*=\s*("|')\s*(javascript:|data:text\/html)[^"']*\2/gi,
+      ""
+    )
+    .replace(
+      /url\(\s*("|')\s*(javascript:|data:text\/html)[^"')]*\1\s*\)/gi,
+      "none"
+    );
+}
+
+/** 按类型净化附件二进制；非 SVG 原样返回 */
+async function sanitizeAttachmentBlob(file: File): Promise<Blob> {
+  if (file.type !== "image/svg+xml") return file;
+  try {
+    const text = await file.text();
+    const cleaned = sanitizeSvg(text);
+    return new Blob([cleaned], { type: "image/svg+xml" });
+  } catch {
+    // 读取失败（如解析异常）：不阻断上传，按原样存储
+    return file;
+  }
+}
+
 async function createAttachmentFromFile(
   file: File,
   noteId: string,
@@ -244,10 +288,11 @@ async function createAttachmentFromFile(
     height = h;
     compressed = true;
   } else {
-    if (file.size > ATT_MAX_ORIGINAL_BYTES) {
+    const source = await sanitizeAttachmentBlob(file);
+    if (source.size > ATT_MAX_ORIGINAL_BYTES) {
       throw new Error("原图超过 10MB 上限");
     }
-    blob = file;
+    blob = source;
     mime = file.type;
     ({ width, height } = await readImageSize(file));
   }

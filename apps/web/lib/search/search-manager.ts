@@ -74,10 +74,14 @@ class SearchManager {
   /** 已入索引的笔记 id（内存维护，配合 discard 幂等删除） */
   private indexedIds = new Set<string>();
 
-  /** 延迟持久化，避免每次按键都写 IndexedDB */
+  /**
+   * 延迟持久化。索引 toJSON 是全量序列化（中文 bigram 索引体积可观），
+   * 频繁落盘的 IO/CPU 成本远大于「崩溃丢 30 秒增量」的风险——
+   * 丢掉的行下次启动 incrementalSync 会补回。
+   */
   private schedulePersist = debounce(() => {
     void this.persist();
-  }, 2000);
+  }, 30000);
 
   ensureReady(): Promise<void> {
     if (!this.initPromise) {
@@ -92,7 +96,11 @@ class SearchManager {
       db.meta.get(LAST_SYNC_META_KEY),
     ]);
 
-    this.lastSync = Number(syncEntry?.value ?? 0);
+    // 增量水位 = 已见行的最大 updatedAt（库内时钟，抗设备时钟回拨）。
+    // 旧版水位为 Date.now()（可能超前于库内值），取小者：多读几行幂等无害
+    const persistedSync = Number(syncEntry?.value ?? 0);
+    const dbMaxUpdatedAt = await this.maxUpdatedAt();
+    this.lastSync = Math.min(persistedSync, dbMaxUpdatedAt);
 
     if (indexEntry?.value) {
       try {
@@ -120,6 +128,12 @@ class SearchManager {
     if (typeof window !== "undefined") {
       window.addEventListener("pagehide", () => void this.persist());
     }
+  }
+
+  /** 库内笔记的最大 updatedAt（走索引取末行，O(log n)；空库为 0） */
+  private async maxUpdatedAt(): Promise<number> {
+    const last = await db.notes.orderBy("updatedAt").last();
+    return last?.updatedAt ?? 0;
   }
 
   /** 从持久化索引中恢复文档 id 集合（依赖 MiniSearch toJSON 结构，做防御处理） */
@@ -156,7 +170,7 @@ class SearchManager {
     const notes = await db.notes.toArray();
     this.index.addAll(notes.map((n) => this.toDoc(n)));
     this.indexedIds = new Set(notes.map((n) => n.id));
-    this.lastSync = Date.now();
+    this.lastSync = notes.reduce((max, n) => Math.max(max, n.updatedAt), 0);
     await this.persist();
   }
 
@@ -170,7 +184,10 @@ class SearchManager {
     for (const note of changed) {
       this.upsert(note);
     }
-    this.lastSync = Date.now();
+    this.lastSync = changed.reduce(
+      (max, n) => Math.max(max, n.updatedAt),
+      this.lastSync
+    );
     if (changed.length > 0) {
       await this.persist();
     }
@@ -194,7 +211,11 @@ class SearchManager {
       void (async () => {
         const notes = await db.notes.bulkGet(event.ids);
         for (const note of notes) {
-          if (note) this.upsert(note);
+          if (note) {
+            this.upsert(note);
+            // 实时入索引的行同步推进水位，下次 incrementalSync 不再重复读
+            this.lastSync = Math.max(this.lastSync, note.updatedAt);
+          }
         }
         this.schedulePersist();
       })();

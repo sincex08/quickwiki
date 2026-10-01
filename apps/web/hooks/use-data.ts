@@ -9,6 +9,7 @@ import {
 import { attachmentRepo } from "@/lib/data/attachment-repository";
 import type { AttachmentRecord } from "@/lib/db";
 import { subscribe } from "@/lib/events";
+import { debounce } from "@/lib/utils";
 import type {
   ListFilters,
   Note,
@@ -25,6 +26,12 @@ export interface NotesFilters {
   tag?: string | null;
 }
 
+/**
+ * 订阅回调的合并窗口（毫秒）：同一时间窗内的事件风暴（批量同步逐行/逐批
+ * emitChange）只触发一次读库。初次挂载不走防抖（直接 load）。
+ */
+const EVENT_MERGE_MS = 50;
+
 export function useNotebooks() {
   const [notebooks, setNotebooks] = useState<Notebook[]>([]);
   const [loading, setLoading] = useState(true);
@@ -38,10 +45,12 @@ export function useNotebooks() {
         setLoading(false);
       });
     };
+    const scheduleLoad = debounce(load, EVENT_MERGE_MS);
     load();
-    const unsub = subscribe("notebooks", load);
+    const unsub = subscribe("notebooks", scheduleLoad);
     return () => {
       active = false;
+      scheduleLoad.cancel();
       unsub();
     };
   }, []);
@@ -84,10 +93,12 @@ export function useNotes(filters: NotesFilters) {
         setLoading(false);
       });
     };
+    const scheduleLoad = debounce(load, EVENT_MERGE_MS);
     load();
-    const unsub = subscribe("notes", load);
+    const unsub = subscribe("notes", scheduleLoad);
     return () => {
       active = false;
+      scheduleLoad.cancel();
       unsub();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -129,9 +140,11 @@ export function useNote(id: string | null) {
         setLoaded(true);
       });
     };
+    const scheduleLoad = debounce(load, EVENT_MERGE_MS);
     load();
-    const unsub = subscribe("notes", load);
+    const unsub = subscribe("notes", scheduleLoad);
     return () => {
+      scheduleLoad.cancel();
       unsub();
     };
   }, [id]);
@@ -149,11 +162,13 @@ export function useTags() {
         if (active) setTags(list);
       });
     };
+    const scheduleLoad = debounce(load, EVENT_MERGE_MS);
     load();
-    const unsubTags = subscribe("tags", load);
-    const unsubNotes = subscribe("notes", load);
+    const unsubTags = subscribe("tags", scheduleLoad);
+    const unsubNotes = subscribe("notes", scheduleLoad);
     return () => {
       active = false;
+      scheduleLoad.cancel();
       unsubTags();
       unsubNotes();
     };
@@ -182,11 +197,13 @@ export function useNoteCounts() {
         if (active) setCounts(c);
       });
     };
+    const scheduleLoad = debounce(load, EVENT_MERGE_MS);
     load();
-    const unsubNotes = subscribe("notes", load);
-    const unsubNotebooks = subscribe("notebooks", load);
+    const unsubNotes = subscribe("notes", scheduleLoad);
+    const unsubNotebooks = subscribe("notebooks", scheduleLoad);
     return () => {
       active = false;
+      scheduleLoad.cancel();
       unsubNotes();
       unsubNotebooks();
     };
@@ -212,10 +229,12 @@ export function useNotesIndex() {
         setLoading(false);
       });
     };
+    const scheduleLoad = debounce(load, EVENT_MERGE_MS);
     load();
-    const unsub = subscribe("notes", load);
+    const unsub = subscribe("notes", scheduleLoad);
     return () => {
       active = false;
+      scheduleLoad.cancel();
       unsub();
     };
   }, []);
@@ -246,10 +265,12 @@ export function useAttachmentRecords(noteId: string | null) {
         setLoading(false);
       });
     };
+    const scheduleLoad = debounce(load, EVENT_MERGE_MS);
     load();
-    const unsub = subscribe("attachments", load);
+    const unsub = subscribe("attachments", scheduleLoad);
     return () => {
       active = false;
+      scheduleLoad.cancel();
       unsub();
     };
   }, [noteId]);

@@ -1,7 +1,12 @@
 import type { SupabaseClient, RealtimeChannel } from "@supabase/supabase-js";
 import { ensureFreshSession, getSupabase } from "@/lib/supabase/client";
 import { db, AUTH_UID_KEY, type AttachmentRecord, type OutboxEntry } from "@/lib/db";
-import { emitChange, subscribe } from "@/lib/events";
+import {
+  emitChange,
+  subscribe,
+  type Channel,
+  type ChangeType,
+} from "@/lib/events";
 import { debounce } from "@/lib/utils";
 import {
   attachmentRepo,
@@ -113,8 +118,78 @@ function setState(patch: Partial<SyncState>) {
   listeners.forEach((fn) => fn(state));
 }
 
-/** 应用远端数据到本地时置位，避免事件回流再次入队造成循环 */
-let applyingRemote = false;
+// ---------- 事件批：pull 批量应用期间合并 emitChange ----------
+//
+// 逐行 emitChange 会让订阅者（useNotes/useNotesIndex/useTags 等）对每一行
+// 做一次全量读库，首次全量同步千行时呈 O(N²) 放大。批内按 channel 维护
+// update/delete 两桶，同 id 冲突以后到的 delete 为准（终态语义）；
+// flush 时每桶各发一条合并事件。非批量路径（本地 CRUD、push 冲突裁决）
+// pendingEmit 为 null，直接透传，行为不变。
+//
+// 回声防护走事件来源标记（ChangeEvent.remote，见 events.ts）：本批 flush
+// 与 batchEmit 直发的事件都带 remote: true，订阅方据此跳过 outbox 入队。
+// 曾用「pull 进行中」的全局时间窗代替，会把用户恰在 pull 期间发起的本地
+// 写入一并静默丢弃（笔记本永不入队 → 笔记 FK 卡死 / 假收敛，2026-10-01
+// 真实环境踩坑），禁止回退。
+
+type BatchBuckets = { update: Set<string>; delete: Set<string> };
+let pendingEmit: Map<Channel, BatchBuckets> | null = null;
+
+function batchEmit(channel: Channel, type: ChangeType, ids: string[]): void {
+  if (ids.length === 0) return;
+  if (!pendingEmit) {
+    // 本函数只被远端应用路径调用：直发也带 remote 标记
+    emitChange(channel, { type, ids, remote: true });
+    return;
+  }
+  const buckets =
+    pendingEmit.get(channel) ?? { update: new Set(), delete: new Set() };
+  for (const id of ids) {
+    if (type === "delete") {
+      buckets.update.delete(id);
+      buckets.delete.add(id);
+    } else {
+      buckets.delete.delete(id);
+      buckets.update.add(id);
+    }
+  }
+  pendingEmit.set(channel, buckets);
+}
+
+/**
+ * 在事件批内执行：过程内所有 batchEmit 汇总为每 channel 两条合并事件。
+ *
+ * **必须可重入**：syncNow 的多个触发源（Realtime / online / 前台 / 手动）之间
+ * 靠外层互斥兜底，但防御上仍可能交叠（如未来新增调用点）。单槽被覆盖会让
+ * 先进入方的 finally 读到 null（真实环境已踩过：`for...of null` →
+ * "batch is not iterable"，整条同步以 error 收场）。重入时事件并入外层批，
+ * 由外层统一 flush——flush 是快照语义，内层 fn 后半段的事件若落在外层
+ * flush 之后，batchEmit 会因 pendingEmit 已置 null 而走透传直发，行为正确。
+ */
+async function withEmitBatch<T>(fn: () => Promise<T>): Promise<T> {
+  if (pendingEmit) {
+    // 重入：事件并入外层批，由外层统一 flush（见上方注释）
+    return await fn();
+  }
+  pendingEmit = new Map();
+  try {
+    return await fn();
+  } finally {
+    const batch = pendingEmit;
+    pendingEmit = null;
+    // flush 的事件来自远端应用：带 remote 标记，订阅方（含引擎自身）跳过入队
+    if (batch) {
+      for (const [channel, buckets] of batch) {
+        if (buckets.update.size > 0) {
+          emitChange(channel, { type: "update", ids: [...buckets.update], remote: true });
+        }
+        if (buckets.delete.size > 0) {
+          emitChange(channel, { type: "delete", ids: [...buckets.delete], remote: true });
+        }
+      }
+    }
+  }
+}
 
 /**
  * 仅本地语义的附件写入（如 blob 懒下载回填）置位：这类写入不改变元数据，
@@ -245,7 +320,10 @@ export async function initSync(): Promise<void> {
   });
 
   subscribe("notes", (e) => {
-    if (applyingRemote) return;
+    // 只跳过「远端应用」回声；本地写入（哪怕发生在 pull 进行中）必须照常入队——
+    // 时间窗防护会静默丢写入（真实环境踩过：pull 期间新建笔记本，入队丢失，
+    // 笔记随后 FK 卡死 + 假收敛，2026-10-01）
+    if (e.remote) return;
     void enqueue("note", e.ids, e.type === "delete");
     // 删除笔记级联：本地附件一并删除（其 delete 事件会自动入队附件墓碑）
     if (e.type === "delete") {
@@ -256,12 +334,12 @@ export async function initSync(): Promise<void> {
     scheduleSync();
   });
   subscribe("notebooks", (e) => {
-    if (applyingRemote) return;
+    if (e.remote) return;
     void enqueue("notebook", e.ids, e.type === "delete");
     scheduleSync();
   });
   subscribe("attachments", (e) => {
-    if (applyingRemote || localAttachmentWrite) return;
+    if (e.remote || localAttachmentWrite) return;
     void enqueue("attachment", e.ids, e.type === "delete");
     scheduleSync();
   });
@@ -347,7 +425,51 @@ async function backfillCatForExistingRows(): Promise<void> {
   }
 }
 
-export async function syncNow(): Promise<void> {
+/**
+ * 同步串行化 + 合并：syncNow 有多个直接触发源（outbox/Realtime 两个防抖、前台节流、
+ * online 事件、手动刷新、跨标签页广播），彼此没有互斥时会并发执行 push+pull——pull
+ * 并发会让事件批的单槽状态被覆盖（真实环境曾因此崩出 "batch is not iterable"）。
+ *
+ * 两层防护：
+ * 1. 合并（此处）：一轮执行期间再来调用只置 syncAgain 标志，本轮跑完补最多一轮，
+ *    不整轮排队。触发风暴下（连建 3 篇笔记 + Realtime 回声 + 广播）每轮真实网络
+ *    RTT 2-3s，N 个源各排一轮会把排水拖到分钟级；合并后最坏 = 每 RTT 一轮。
+ * 2. 可重入事件批（withEmitBatch）：并发 pull 即便发生（未来新增调用方）也并入
+ *    外层批，不再崩。
+ *
+ * 合并调用返回的 promise 涵盖"补的那一轮"——await 语义与逐轮排队等价，调用方
+ * 不会拿到"还没同步完就 resolve"的结果。do-while 尾循环在持续活动期间保持
+ * 每 RTT 一轮的排水速率，但不会积压待跑轮次。
+ */
+let syncInFlight: Promise<void> | null = null;
+let syncAgain = false;
+
+export function syncNow(): Promise<void> {
+  if (syncInFlight) {
+    syncAgain = true;
+    return syncInFlight;
+  }
+  const run = runSyncLoop();
+  syncInFlight = run;
+  return run;
+}
+
+async function runSyncLoop(): Promise<void> {
+  // 先让出一个微任务：async 函数体在首个 await 前同步执行，这里确保
+  // syncInFlight 已被 syncNow 挂出后再进 doSyncNow，杜绝"同步前缀里
+  // 重入 syncNow 看到 inFlight 还是 null"的窗口。
+  await null;
+  try {
+    do {
+      syncAgain = false;
+      await doSyncNow();
+    } while (syncAgain);
+  } finally {
+    syncInFlight = null;
+  }
+}
+
+async function doSyncNow(): Promise<void> {
   const sb = getSupabase();
   if (!sb) {
     setState({ status: "disabled" });
@@ -866,22 +988,42 @@ async function pushAttachment(
     deleted_at: null,
   };
 
-  // 元数据先行（insert 或乐观锁 upsert；冲突远端胜出）
-  let remote = await fetchRemote(sb, "attachments", att.id);
-  if (!remote) {
-    remote = await insertRemote(sb, "attachments", metaRow);
-  } else {
+  // 元数据先行（insert 或乐观锁更新；冲突远端胜出）。
+  // 有乐观锁基线时先条件更新（常规路径一次网络往返），0 行受影响再取
+  // 远端现状裁决；无基线（首次推送/旧数据）先取远端快照再插入或条件更新
+  let remote: RemoteRowMeta | null = null;
+  if (att.syncVersion != null) {
     const updated = await sb
       .from("attachments")
       .update(metaRow)
       .eq("id", att.id)
-      .eq("version", remote.version)
+      .eq("version", att.syncVersion)
       .select();
     if (updated.error) throw new Error(updated.error.message);
     if (updated.data && updated.data.length > 0) {
       remote = updated.data[0] as RemoteRowMeta;
     }
-    // 0 行受影响 = 版本前移：接受远端元数据（本地 blob 不受影响）
+  }
+  if (!remote) {
+    remote = await fetchRemote(sb, "attachments", att.id);
+    if (!remote) {
+      remote = await insertRemote(sb, "attachments", metaRow);
+    } else if (att.syncVersion == null) {
+      // 首推撞已有行（本地基线丢失但远端已存在）：以远端当前版本为基线
+      // 条件更新一次，成功则以新版本为基线
+      const retried = await sb
+        .from("attachments")
+        .update(metaRow)
+        .eq("id", att.id)
+        .eq("version", remote.version)
+        .select();
+      if (retried.error) throw new Error(retried.error.message);
+      if (retried.data && retried.data.length > 0) {
+        remote = retried.data[0] as RemoteRowMeta;
+      }
+      // 仍 0 行 = 并发前移：接受远端（remote 已是最新快照，作基线）
+    }
+    // 有基线且版本前移：接受远端元数据（本地 blob 不受影响）
   }
 
   // 二进制上传（upsert 幂等；无 blob = 元数据先行场景，等 blob 回填后下轮补传）
@@ -952,104 +1094,115 @@ async function pullTable(
 }
 
 async function pull(sb: SupabaseClient): Promise<void> {
-  const userId = state.userId!;
-  const cursorKey = `sync.lastPull:${userId}`;
-  const meta = await db.meta.get(cursorKey);
-  // 旧游标为客户端时钟毫秒数（数值）——语义已切换，重置触发一次全量重拉
-  const cursor = typeof meta?.value === "string" ? meta.value : EPOCH_CURSOR;
-  const prevCursorTs = ts(cursor);
-  let maxTs = prevCursorTs;
+  // 事件批：整轮 pull（含孤儿清扫与标签对账）的逐行事件合并为每渠道两条，
+  // 避免订阅者对每一行远端数据做一次全量读库
+  await withEmitBatch(async () => {
+    const userId = state.userId!;
+    const cursorKey = `sync.lastPull:${userId}`;
+    const meta = await db.meta.get(cursorKey);
+    // 旧游标为客户端时钟毫秒数（数值）——语义已切换，重置触发一次全量重拉
+    const cursor = typeof meta?.value === "string" ? meta.value : EPOCH_CURSOR;
+    const prevCursorTs = ts(cursor);
+    let maxTs = prevCursorTs;
 
-  // 复合游标存在时用 (ts,id] 严格续读；旧版纯时间戳游标从该 ts 之后全取
-  // （同 ts 未读行会被重复拉取，applyRemote 幂等，无害）
-  const pairKey = `sync.lastPullPair:${userId}`;
-  const pairMeta = await db.meta.get(pairKey);
-  const pair =
-    pairMeta?.value && typeof pairMeta.value === "object"
-      ? (pairMeta.value as { ts: string; id: string | null })
-      : { ts: cursor, id: null };
+    // 复合游标存在时用 (ts,id] 严格续读；旧版纯时间戳游标从该 ts 之后全取
+    // （同 ts 未读行会被重复拉取，applyRemote 幂等，无害）
+    const pairKey = `sync.lastPullPair:${userId}`;
+    const pairMeta = await db.meta.get(pairKey);
+    const pair =
+      pairMeta?.value && typeof pairMeta.value === "object"
+        ? (pairMeta.value as { ts: string; id: string | null })
+        : { ts: cursor, id: null };
 
-  for (const table of ["notes", "notebooks"] as const) {
-    const tableMax = await pullTable(sb, table, userId, pair, async (row) => {
-      if (table === "notes") {
-        await applyRemoteNote(row as RemoteNote);
-      } else {
-        await applyRemoteNotebook(row as RemoteNotebook);
-      }
-    });
-    if (tableMax > maxTs) maxTs = tableMax;
-  }
-
-  // 游标只前进：maxTs 回退安全窗口后仍不得小于上一轮游标
-  const nextCursorTs = Math.max(prevCursorTs, maxTs - CURSOR_SAFETY_LAG_MS);
-  await db.meta.put({
-    key: cursorKey,
-    value: new Date(nextCursorTs).toISOString(),
-  });
-  await db.meta.put({
-    key: pairKey,
-    value: { ts: new Date(nextCursorTs).toISOString(), id: null },
-  });
-
-  // 附件独立游标：元数据先行，blob 缺失由懒下载回填
-  const attCursorKey = `sync.lastPullAtt:${userId}`;
-  const attMeta = await db.meta.get(attCursorKey);
-  const attCursor =
-    typeof attMeta?.value === "string" ? attMeta.value : EPOCH_CURSOR;
-  const attPrevTs = ts(attCursor);
-
-  const attPairKey = `sync.lastPullAttPair:${userId}`;
-  const attPairMeta = await db.meta.get(attPairKey);
-  const attPair =
-    attPairMeta?.value && typeof attPairMeta.value === "object"
-      ? (attPairMeta.value as { ts: string; id: string | null })
-      : { ts: attCursor, id: null };
-
-  const attMaxTs = await pullTable(
-    sb,
-    "attachments",
-    userId,
-    attPair,
-    async (row) => {
-      await applyRemoteAttachment(row as RemoteAttachment);
+    for (const table of ["notes", "notebooks"] as const) {
+      const tableMax = await pullTable(sb, table, userId, pair, async (row) => {
+        if (table === "notes") {
+          await applyRemoteNote(row as RemoteNote);
+        } else {
+          await applyRemoteNotebook(row as RemoteNotebook);
+        }
+      });
+      if (tableMax > maxTs) maxTs = tableMax;
     }
-  );
 
-  const attNextTs = Math.max(attPrevTs, attMaxTs - CURSOR_SAFETY_LAG_MS);
-  await db.meta.put({
-    key: attCursorKey,
-    value: new Date(attNextTs).toISOString(),
-  });
-  await db.meta.put({
-    key: attPairKey,
-    value: { ts: new Date(attNextTs).toISOString(), id: null },
-  });
+    // 游标只前进：maxTs 回退安全窗口后仍不得小于上一轮游标
+    const nextCursorTs = Math.max(prevCursorTs, maxTs - CURSOR_SAFETY_LAG_MS);
+    await db.meta.put({
+      key: cursorKey,
+      value: new Date(nextCursorTs).toISOString(),
+    });
+    await db.meta.put({
+      key: pairKey,
+      value: { ts: new Date(nextCursorTs).toISOString(), id: null },
+    });
 
-  await sweepOrphanNotes();
-  // 标签对账：以 notes.tags 为事实重建 noteTags/计数，修复历史分叉
-  // （如旧版 push 回写覆盖 note.tags 后残留的孤儿计数）。幂等，无漂移零写入
-  if (await reconcileTags()) {
-    emitChange("tags", { type: "update", ids: [] });
-  }
+    // 附件独立游标：元数据先行，blob 缺失由懒下载回填
+    const attCursorKey = `sync.lastPullAtt:${userId}`;
+    const attMeta = await db.meta.get(attCursorKey);
+    const attCursor =
+      typeof attMeta?.value === "string" ? attMeta.value : EPOCH_CURSOR;
+    const attPrevTs = ts(attCursor);
+
+    const attPairKey = `sync.lastPullAttPair:${userId}`;
+    const attPairMeta = await db.meta.get(attPairKey);
+    const attPair =
+      attPairMeta?.value && typeof attPairMeta.value === "object"
+        ? (attPairMeta.value as { ts: string; id: string | null })
+        : { ts: attCursor, id: null };
+
+    const attMaxTs = await pullTable(
+      sb,
+      "attachments",
+      userId,
+      attPair,
+      async (row) => {
+        await applyRemoteAttachment(row as RemoteAttachment);
+      }
+    );
+
+    const attNextTs = Math.max(attPrevTs, attMaxTs - CURSOR_SAFETY_LAG_MS);
+    await db.meta.put({
+      key: attCursorKey,
+      value: new Date(attNextTs).toISOString(),
+    });
+    await db.meta.put({
+      key: attPairKey,
+      value: { ts: new Date(attNextTs).toISOString(), id: null },
+    });
+
+    await sweepOrphanNotes();
+    // 标签对账：以 notes.tags 为事实重建 noteTags/计数，修复历史分叉
+    // （如旧版 push 回写覆盖 note.tags 后残留的孤儿计数）。幂等，无漂移零写入。
+    // 空 ids 事件是「踢订阅者刷新」语义，不走 batchEmit（其会早退空 ids）
+    if (await reconcileTags()) {
+      emitChange("tags", { type: "update", ids: [] });
+    }
+  });
 }
 
 /**
  * 孤儿笔记清扫：cat 指向不存在笔记本的笔记会计入「全部」，却不出现在
  * 任何笔记本角标或「未分类」里（角标相加对不上）。可能来自多端并发的
- * 删除/编辑竞态，每轮 pull 收敛一次：摘除分类入「未分类」，刷新
+ * 删除/编辑竞态，收敛一次：摘除分类入「未分类」，刷新
  * updatedAt 并入队推平服务端残留的悬空 notebook_id（否则这些笔记后续
  * 推送会因 FK 指向墓碑硬删后的不存在的行而无限重试）。
+ * 持久化节流：扫描是两个全表/全索引查询，高频 pull 下按 5 分钟间隔执行；
+ * 时间戳存 meta 表（随用户库隔离，重装/换库自动重置）。
  */
+const SWEEP_LAST_KEY = "sync.lastSweep";
+const SWEEP_MIN_INTERVAL_MS = 5 * 60_000;
+
 async function sweepOrphanNotes(): Promise<void> {
+  const lastMeta = await db.meta.get(SWEEP_LAST_KEY);
+  const lastAt = typeof lastMeta?.value === "number" ? lastMeta.value : 0;
+  if (Date.now() - lastAt < SWEEP_MIN_INTERVAL_MS) return;
+
   const notebookIds = new Set(
     (await db.notebooks.toCollection().primaryKeys()) as string[]
   );
   const cats = (await db.notes.orderBy("cat").uniqueKeys()) as string[];
   const orphanCats = cats.filter((c) => c !== "" && !notebookIds.has(c));
-  if (orphanCats.length === 0) return;
-
-  applyingRemote = true;
-  try {
+  if (orphanCats.length > 0) {
     const movedAt = Date.now();
     const affectedIds: string[] = [];
     for (const cat of orphanCats) {
@@ -1064,99 +1217,95 @@ async function sweepOrphanNotes(): Promise<void> {
         note.updatedAt = movedAt;
       });
     }
-    if (affectedIds.length === 0) return;
-    // applyingRemote 期间事件不入队，需手动写入 outbox 推平服务端残留
-    await db.outbox.bulkPut(
-      affectedIds.map((id) => ({
-        key: `note:${id}`,
-        kind: "note" as const,
-        entityId: id,
-        deleted: false,
-        queuedAt: Date.now(),
-      }))
-    );
-    emitChange("notes", { type: "update", ids: affectedIds });
-  } finally {
-    applyingRemote = false;
+    if (affectedIds.length > 0) {
+      // 归属迁移经 batchEmit 带 remote 标记，订阅者（含引擎自身）跳过入队；
+      // 但孤儿修复属本地纠正性写入，必须手动入队推平服务端残留归属
+      await db.outbox.bulkPut(
+        affectedIds.map((id) => ({
+          key: `note:${id}`,
+          kind: "note" as const,
+          entityId: id,
+          deleted: false,
+          queuedAt: Date.now(),
+        }))
+      );
+      batchEmit("notes", "update", affectedIds);
+    }
   }
+  await db.meta.put({ key: SWEEP_LAST_KEY, value: Date.now() });
 }
 
 async function applyRemoteNote(row: RemoteNote, force = false): Promise<void> {
-  applyingRemote = true;
-  try {
-    if (row.deleted_at) {
-      // 墓碑：本地存在比删除意图更新的编辑 → 复活（重新入队，push 会清除墓碑）；
-      // 否则接受删除并清除本地待推送记录
-      const local = await db.notes.get(row.id);
-      if (local && local.updatedAt > ts(row.deleted_at)) {
-        await db.outbox.put({
-          key: `note:${row.id}`,
-          kind: "note",
-          entityId: row.id,
-          deleted: false,
-          queuedAt: Date.now(),
-        });
-        scheduleSync();
-        return;
-      }
-      const tags = cleanTags(local?.tags);
-      await db.transaction("rw", db.notes, db.noteTags, db.tags, async () => {
-        await db.notes.delete(row.id);
-        // 与本地删除路径一致按关系表回收标签，否则同步拉取的删除
-        // 会让标签角标虚高、noteTags 残留死行
-        await retractNoteTags(row.id);
+  if (row.deleted_at) {
+    // 墓碑：本地存在比删除意图更新的编辑 → 复活（重新入队，push 会清除墓碑）；
+    // 否则接受删除并清除本地待推送记录
+    const local = await db.notes.get(row.id);
+    if (local && local.updatedAt > ts(row.deleted_at)) {
+      await db.outbox.put({
+        key: `note:${row.id}`,
+        kind: "note",
+        entityId: row.id,
+        deleted: false,
+        queuedAt: Date.now(),
       });
-      await db.outbox.delete(`note:${row.id}`);
-      // 远端删除已级联附件：本地附件直接清理（无需入队，墓碑由附件 pull 收敛）
-      await removeNoteAttachmentsLocal(row.id);
-      emitChange("notes", { type: "delete", ids: [row.id] });
-      if (tags.length > 0) {
-        emitChange("tags", { type: "update", ids: tags });
-      }
+      scheduleSync();
       return;
     }
-    const local = await db.notes.get(row.id);
-    if (!force) {
-      const remoteUpdated = new Date(row.updated_at).getTime();
-      // 本地有未推送的修改 → 本地胜出，等 push 处理（不覆盖本地、不记录远端版本，
-      // 避免绕过冲突检测）。这里**不额外要求 updatedAt 更新**：排序（sortOrder）
-      // 按约定不刷新时间，若只按时间判定，它会被「push → 回环 pull」当场抹掉。
-      // dead 条目表示推送已放弃，不再压制远端更新。
-      const pending = await db.outbox.get(`note:${row.id}`);
-      if (pending && !pending.dead) return;
-      if (local && local.updatedAt > remoteUpdated) return;
-    }
-    const nextTags = cleanTags(row.tags);
-    const note: Note = {
-      id: row.id,
-      title: row.title,
-      titleManual: row.title_manual,
-      content: row.content,
-      notebookId: row.notebook_id,
-      tags: nextTags,
-      createdAt: new Date(row.created_at).getTime(),
-      updatedAt: new Date(row.updated_at).getTime(),
-      pinned: row.pinned,
-      // 服务端缺列（undefined）时保留本地顺序；明确返回 null 才代表「没有手动顺序」
-      sortOrder: resolveRemoteSortOrder(row.sort_order, local?.sortOrder),
-      syncVersion: row.version,
-    };
-    // cat 派生索引必须显式携带：Dexie 的 creating hook 只在 add() 时触发，
-    // put()（含首写）不触发——漏掉它，拉取的行对 where("cat") 过滤隐形，
-    // 表现为「侧栏看得到笔记，列表显示还没有笔记」（2026-09-18 实测定位）
-    (note as Note & { cat?: string }).cat = row.notebook_id ?? "";
+    const tags = cleanTags(local?.tags);
     await db.transaction("rw", db.notes, db.noteTags, db.tags, async () => {
-      await db.notes.put(note);
-      // 同步路径与本地 CRUD 走同一套标签维护：此前远端应用不写
-      // noteTags/tags，多端同步后标签角标与按标签过滤的列表会漂移
-      await syncNoteTags(row.id, cleanTags(local?.tags), nextTags);
+      await db.notes.delete(row.id);
+      // 与本地删除路径一致按关系表回收标签，否则同步拉取的删除
+      // 会让标签角标虚高、noteTags 残留死行
+      await retractNoteTags(row.id);
     });
-    emitChange("notes", { type: "update", ids: [row.id] });
-    if (nextTags.length > 0 || (local?.tags.length ?? 0) > 0) {
-      emitChange("tags", { type: "update", ids: nextTags });
+    await db.outbox.delete(`note:${row.id}`);
+    // 远端删除已级联附件：本地附件直接清理（无需入队，墓碑由附件 pull 收敛）
+    await removeNoteAttachmentsLocal(row.id);
+    batchEmit("notes", "delete", [row.id]);
+    if (tags.length > 0) {
+      batchEmit("tags", "update", tags);
     }
-  } finally {
-    applyingRemote = false;
+    return;
+  }
+  const local = await db.notes.get(row.id);
+  if (!force) {
+    const remoteUpdated = new Date(row.updated_at).getTime();
+    // 本地有未推送的修改 → 本地胜出，等 push 处理（不覆盖本地、不记录远端版本，
+    // 避免绕过冲突检测）。这里**不额外要求 updatedAt 更新**：排序（sortOrder）
+    // 按约定不刷新时间，若只按时间判定，它会被「push → 回环 pull」当场抹掉。
+    // dead 条目表示推送已放弃，不再压制远端更新。
+    const pending = await db.outbox.get(`note:${row.id}`);
+    if (pending && !pending.dead) return;
+    if (local && local.updatedAt > remoteUpdated) return;
+  }
+  const nextTags = cleanTags(row.tags);
+  const note: Note = {
+    id: row.id,
+    title: row.title,
+    titleManual: row.title_manual,
+    content: row.content,
+    notebookId: row.notebook_id,
+    tags: nextTags,
+    createdAt: new Date(row.created_at).getTime(),
+    updatedAt: new Date(row.updated_at).getTime(),
+    pinned: row.pinned,
+    // 服务端缺列（undefined）时保留本地顺序；明确返回 null 才代表「没有手动顺序」
+    sortOrder: resolveRemoteSortOrder(row.sort_order, local?.sortOrder),
+    syncVersion: row.version,
+  };
+  // cat 派生索引必须显式携带：Dexie 的 creating hook 只在 add() 时触发，
+  // put()（含首写）不触发——漏掉它，拉取的行对 where("cat") 过滤隐形，
+  // 表现为「侧栏看得到笔记，列表显示还没有笔记」（2026-09-18 实测定位）
+  (note as Note & { cat?: string }).cat = row.notebook_id ?? "";
+  await db.transaction("rw", db.notes, db.noteTags, db.tags, async () => {
+    await db.notes.put(note);
+    // 同步路径与本地 CRUD 走同一套标签维护：此前远端应用不写
+    // noteTags/tags，多端同步后标签角标与按标签过滤的列表会漂移
+    await syncNoteTags(row.id, cleanTags(local?.tags), nextTags);
+  });
+  batchEmit("notes", "update", [row.id]);
+  if (nextTags.length > 0 || (local?.tags.length ?? 0) > 0) {
+    batchEmit("tags", "update", nextTags);
   }
 }
 
@@ -1180,115 +1329,9 @@ async function applyRemoteNotebook(
   row: RemoteNotebook,
   force = false
 ): Promise<void> {
-  applyingRemote = true;
-  try {
-    if (row.deleted_at) {
-      const local = await db.notebooks.get(row.id);
-      if (local && local.updatedAt > ts(row.deleted_at)) {
-        await db.outbox.put({
-          key: `notebook:${row.id}`,
-          kind: "notebook",
-          entityId: row.id,
-          deleted: false,
-          queuedAt: Date.now(),
-        });
-        scheduleSync();
-        return;
-      }
-      await db.notebooks.delete(row.id);
-      await db.outbox.delete(`notebook:${row.id}`);
-
-      // 与本地删除路径（notebookRepo.delete）保持一致：摘除笔记归属并刷新
-      // 时间戳。否则这些笔记既不出现在任何笔记本也不属于「未分类」，且后续
-      // 推送会携带指向已删笔记本的 notebook_id——服务端墓碑被硬删后 FK 报错
-      // 导致该条目无限重试。
-      const affectedIds = (await db.notes
-        .where("notebookId")
-        .equals(row.id)
-        .primaryKeys()) as string[];
-      if (affectedIds.length > 0) {
-        const movedAt = Date.now();
-        await db.notes
-          .where("notebookId")
-          .equals(row.id)
-          .modify((note) => {
-            note.notebookId = null;
-            note.updatedAt = movedAt;
-          });
-        // applyingRemote 期间事件不入队，需手动写入 outbox 推平服务端的
-        // 残留 notebook_id；事件仅用于刷新 UI
-        await db.outbox.bulkPut(
-          affectedIds.map((id) => ({
-            key: `note:${id}`,
-            kind: "note" as const,
-            entityId: id,
-            deleted: false,
-            queuedAt: Date.now(),
-          }))
-        );
-        scheduleSync();
-      }
-      emitChange("notebooks", { type: "delete", ids: [row.id] });
-      if (affectedIds.length > 0) {
-        emitChange("notes", { type: "update", ids: affectedIds });
-      }
-
-      // 子笔记本上移到被删者的父级（根则变根），否则子树不可达；
-      // 同样手动入队推平其他设备
-      const parentOfDeleted = local?.parentId ?? null;
-      const children = await db.notebooks
-        .filter((nb) => nb.parentId === row.id)
-        .toArray();
-      if (children.length > 0) {
-        const movedAt = Date.now();
-        const childIds = children.map((c) => c.id);
-        for (const child of children) {
-          await db.notebooks.update(child.id, {
-            parentId: parentOfDeleted,
-            updatedAt: movedAt,
-          });
-        }
-        await db.outbox.bulkPut(
-          childIds.map((id) => ({
-            key: `notebook:${id}`,
-            kind: "notebook" as const,
-            entityId: id,
-            deleted: false,
-            queuedAt: Date.now(),
-          }))
-        );
-        scheduleSync();
-        emitChange("notebooks", { type: "update", ids: childIds });
-      }
-      return;
-    }
-    if (!force) {
-      const local = await db.notebooks.get(row.id);
-      const remoteUpdated = new Date(row.updated_at).getTime();
-      if (local && local.updatedAt > remoteUpdated) {
-        const pending = await db.outbox.get(`notebook:${row.id}`);
-        if (pending) return;
-      }
-    }
-    const nb: Notebook = {
-      id: row.id,
-      name: row.name,
-      color: row.color,
-      parentId: row.parent_id,
-      createdAt: new Date(row.created_at).getTime(),
-      updatedAt: new Date(row.updated_at).getTime(),
-      syncVersion: row.version,
-    };
-    await db.notebooks.put(nb);
-    emitChange("notebooks", { type: "update", ids: [row.id] });
-    // LWW 跨设备写入可能引入 parent 环（如两端互换父级后各自覆盖），
-    // 环成员在树中互相不可达。若本行已在环上，断开它的父级引用并入队，
-    // 推平服务端；各端对环成员行 apply 时按同一规则自愈，最终 LWW 收敛。
-    if (await notebookInCycle(row.id)) {
-      await db.notebooks.update(row.id, {
-        parentId: null,
-        updatedAt: Date.now(),
-      });
+  if (row.deleted_at) {
+    const local = await db.notebooks.get(row.id);
+    if (local && local.updatedAt > ts(row.deleted_at)) {
       await db.outbox.put({
         key: `notebook:${row.id}`,
         kind: "notebook",
@@ -1297,10 +1340,112 @@ async function applyRemoteNotebook(
         queuedAt: Date.now(),
       });
       scheduleSync();
-      emitChange("notebooks", { type: "update", ids: [row.id] });
+      return;
     }
-  } finally {
-    applyingRemote = false;
+    await db.notebooks.delete(row.id);
+    await db.outbox.delete(`notebook:${row.id}`);
+
+    // 与本地删除路径（notebookRepo.delete）保持一致：摘除笔记归属并刷新
+    // 时间戳。否则这些笔记既不出现在任何笔记本也不属于「未分类」，且后续
+    // 推送会携带指向已删笔记本的 notebook_id——服务端墓碑被硬删后 FK 报错
+    // 导致该条目无限重试。
+    const affectedIds = (await db.notes
+      .where("notebookId")
+      .equals(row.id)
+      .primaryKeys()) as string[];
+    if (affectedIds.length > 0) {
+      const movedAt = Date.now();
+      await db.notes
+        .where("notebookId")
+        .equals(row.id)
+        .modify((note) => {
+          note.notebookId = null;
+          note.updatedAt = movedAt;
+        });
+      // 笔记归属变更经 batchEmit 带 remote 标记，订阅者（含引擎自身）跳过
+      // 入队；但级联修复属本地纠正性写入，需手动入队推平服务端残留的
+      // notebook_id；事件仅用于刷新 UI
+      await db.outbox.bulkPut(
+        affectedIds.map((id) => ({
+          key: `note:${id}`,
+          kind: "note" as const,
+          entityId: id,
+          deleted: false,
+          queuedAt: Date.now(),
+        }))
+      );
+      scheduleSync();
+    }
+    batchEmit("notebooks", "delete", [row.id]);
+    if (affectedIds.length > 0) {
+      batchEmit("notes", "update", affectedIds);
+    }
+
+    // 子笔记本上移到被删者的父级（根则变根），否则子树不可达；
+    // 同样手动入队推平其他设备
+    const parentOfDeleted = local?.parentId ?? null;
+    const children = await db.notebooks
+      .filter((nb) => nb.parentId === row.id)
+      .toArray();
+    if (children.length > 0) {
+      const movedAt = Date.now();
+      const childIds = children.map((c) => c.id);
+      for (const child of children) {
+        await db.notebooks.update(child.id, {
+          parentId: parentOfDeleted,
+          updatedAt: movedAt,
+        });
+      }
+      await db.outbox.bulkPut(
+        childIds.map((id) => ({
+          key: `notebook:${id}`,
+          kind: "notebook" as const,
+          entityId: id,
+          deleted: false,
+          queuedAt: Date.now(),
+        }))
+      );
+      scheduleSync();
+      batchEmit("notebooks", "update", childIds);
+    }
+    return;
+  }
+  if (!force) {
+    const local = await db.notebooks.get(row.id);
+    const remoteUpdated = new Date(row.updated_at).getTime();
+    if (local && local.updatedAt > remoteUpdated) {
+      const pending = await db.outbox.get(`notebook:${row.id}`);
+      if (pending) return;
+    }
+  }
+  const nb: Notebook = {
+    id: row.id,
+    name: row.name,
+    color: row.color,
+    parentId: row.parent_id,
+    createdAt: new Date(row.created_at).getTime(),
+    updatedAt: new Date(row.updated_at).getTime(),
+    syncVersion: row.version,
+  };
+  await db.notebooks.put(nb);
+  batchEmit("notebooks", "update", [row.id]);
+  // LWW 跨设备写入可能引入 parent 环（如两端互换父级后各自覆盖），
+  // 环成员在树中互相不可达。若本行已在环上，断开它的父级引用并入队，
+  // 推平服务端；各端对环成员行 apply 时按同一规则自愈，最终 LWW 收敛。
+  if (await notebookInCycle(row.id)) {
+    await db.notebooks.update(row.id, {
+      parentId: null,
+      updatedAt: Date.now(),
+    });
+    await db.outbox.put({
+      key: `notebook:${row.id}`,
+      kind: "notebook",
+      entityId: row.id,
+      deleted: false,
+      queuedAt: Date.now(),
+    });
+    scheduleSync();
+    batchEmit("notebooks", "update", [row.id]);
   }
 }
 
@@ -1312,53 +1457,48 @@ async function removeNoteAttachmentsLocal(noteId: string): Promise<void> {
     .primaryKeys()) as string[];
   if (ids.length === 0) return;
   await db.attachments.bulkDelete(ids);
-  emitChange("attachments", { type: "delete", ids });
+  batchEmit("attachments", "delete", ids);
 }
 
 async function applyRemoteAttachment(
   row: RemoteAttachment,
   force = false
 ): Promise<void> {
-  applyingRemote = true;
-  try {
-    if (row.deleted_at) {
-      // 附件不可变，无「本地更新」语义：直接接受删除
-      await db.attachments.delete(row.id);
-      await db.outbox.delete(`attachment:${row.id}`);
-      emitChange("attachments", { type: "delete", ids: [row.id] });
-      return;
-    }
-    const local = await db.attachments.get(row.id);
-    if (!force && local && local.filename === row.filename) {
-      // 元数据无变化：仅核对乐观锁基线，不动本地 blob
-      if (local.syncVersion !== row.version) {
-        await db.attachments.put({ ...local, syncVersion: row.version });
-      }
-      if (!local.blob) queueBlobDownload(row.id);
-      return;
-    }
-    // 元数据先行落库；本地已有 blob 时保留（不可变内容，等价即跳过重下）
-    const record: AttachmentRecord = {
-      id: row.id,
-      noteId: row.note_id,
-      filename: row.filename,
-      mime: row.mime,
-      size: Number(row.size),
-      width: row.width,
-      height: row.height,
-      hash: row.hash,
-      compressed: row.compressed,
-      createdAt: new Date(row.created_at).getTime(),
-      updatedAt: new Date(row.updated_at).getTime(),
-      syncVersion: row.version,
-      blob: local?.blob,
-    };
-    await db.attachments.put(record);
-    if (!record.blob) queueBlobDownload(row.id);
-    emitChange("attachments", { type: "update", ids: [row.id] });
-  } finally {
-    applyingRemote = false;
+  if (row.deleted_at) {
+    // 附件不可变，无「本地更新」语义：直接接受删除
+    await db.attachments.delete(row.id);
+    await db.outbox.delete(`attachment:${row.id}`);
+    batchEmit("attachments", "delete", [row.id]);
+    return;
   }
+  const local = await db.attachments.get(row.id);
+  if (!force && local && local.filename === row.filename) {
+    // 元数据无变化：仅核对乐观锁基线，不动本地 blob
+    if (local.syncVersion !== row.version) {
+      await db.attachments.put({ ...local, syncVersion: row.version });
+    }
+    if (!local.blob) queueBlobDownload(row.id);
+    return;
+  }
+  // 元数据先行落库；本地已有 blob 时保留（不可变内容，等价即跳过重下）
+  const record: AttachmentRecord = {
+    id: row.id,
+    noteId: row.note_id,
+    filename: row.filename,
+    mime: row.mime,
+    size: Number(row.size),
+    width: row.width,
+    height: row.height,
+    hash: row.hash,
+    compressed: row.compressed,
+    createdAt: new Date(row.created_at).getTime(),
+    updatedAt: new Date(row.updated_at).getTime(),
+    syncVersion: row.version,
+    blob: local?.blob,
+  };
+  await db.attachments.put(record);
+  if (!record.blob) queueBlobDownload(row.id);
+  batchEmit("attachments", "update", [row.id]);
 }
 
 // ---------- 附件 blob 懒下载 ----------
@@ -1422,7 +1562,7 @@ async function downloadBlobForAttachment(id: string): Promise<void> {
     localAttachmentWrite = true;
     try {
       await db.attachments.put({ ...latest, blob });
-      emitChange("attachments", { type: "update", ids: [id] });
+      batchEmit("attachments", "update", [id]);
     } finally {
       localAttachmentWrite = false;
     }

@@ -17,6 +17,7 @@ vi.mock("@/lib/supabase/client", () => ({
 }));
 
 import { db } from "@/lib/db";
+import { notebookRepo, noteRepo } from "@/lib/data/repository";
 import { getSyncState, initSync, syncNow } from "@/lib/sync/sync-engine";
 import { createFakeSupabase, FakeClock, USER_ID, type Row } from "./fake-postgrest";
 import type { Note } from "@quickwiki/shared";
@@ -669,5 +670,102 @@ describe("同步路径维护标签计数", () => {
     expect(await db.notes.get("d1")).toBeUndefined();
     expect(await db.tags.get("tmp")).toBeUndefined();
     expect(await db.noteTags.where("noteId").equals("d1").count()).toBe(0);
+  });
+
+  it("并发 syncNow 互斥：重叠触发不崩（batch is not iterable 回归）", async () => {
+    // 真实环境踩过：Realtime/online/手动多源几乎同时触发 syncNow，两个 pull
+    // 的事件批单槽互相覆盖，先进入方 finally 读到 null 崩出 "batch is not iterable"。
+    await db.notes.put(localNote({ id: "race-1" }));
+    await db.outbox.put({
+      key: "note:race-1",
+      kind: "note",
+      entityId: "race-1",
+      deleted: false,
+      queuedAt: 1,
+    });
+    tables.notes.push(
+      remoteNote({ id: "race-remote", server_updated_at: clock.at(5000) })
+    );
+
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let gated = false;
+    fake.hooks.beforeExecute = async (req) => {
+      // 闸住 pull 阶段对 notes 的首次拉取（hasSortOrderColumn 已有模块级缓存，
+      // 不会误伤），人为制造第二次 syncNow 与第一次的重叠窗口
+      if (!gated && req.mode === "select" && req.table === "notes") {
+        gated = true;
+        await gate;
+      }
+    };
+
+    const first = syncNow();
+    await new Promise((r) => setTimeout(r, 30)); // 等第一次进入被闸住的 pull
+    const second = syncNow(); // 合并语义：不整轮排队，标记本轮跑完补一轮；返回的 promise 涵盖补轮
+    await new Promise((r) => setTimeout(r, 30));
+    release();
+    await Promise.all([first, second]);
+    fake.hooks.beforeExecute = undefined;
+
+    const state = getSyncState();
+    expect(state.error ?? "").not.toMatch(/not iterable/);
+    // 两轮同步都完整跑完：本地笔记已推平、远端笔记已拉取
+    const pushed = await db.notes.get("race-1");
+    expect(pushed?.syncVersion).not.toBeNull();
+    expect(await db.notes.get("race-remote")).toBeDefined();
+    expect((await db.outbox.toArray()).length).toBe(0);
+  });
+
+  it("pull 应用期间的本地写入入队不丢弃（笔记本 FK 卡死回归）", async () => {
+    // 真实环境踩过（2026-10-01）：旧回声防护用「pull 进行中」全局时间窗，
+    // 把用户恰在 pull 期间的本地写入入队静默丢弃 → 笔记本永不推送 →
+    // 云端无行 → 笔记 push 撞 notes_notebook_id_fkey 重试到 dead 卡死；
+    // 若写入全被丢弃还会 outbox=0「假收敛」。修复后改事件来源标记
+    // （ChangeEvent.remote），本用例闸住 pull、在窗口内走 repository 正常
+    // 新建笔记本+笔记，断言入队不丢、按序推平（笔记本先于笔记）、无 FK。
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let gated = false;
+    fake.hooks.beforeExecute = async (req) => {
+      if (!gated && req.mode === "select" && req.table === "notes") {
+        gated = true;
+        await gate;
+      }
+    };
+
+    const first = syncNow();
+    await new Promise((r) => setTimeout(r, 30)); // 等第一次进入被闸住的 pull
+
+    // pull 窗口内的本地写入：模拟用户在同步进行时新建笔记本并写笔记
+    const nbId = await notebookRepo.create({
+      name: "窗口内笔记本",
+      color: "#0af",
+      parentId: null,
+    });
+    const noteId = await noteRepo.create({
+      title: "窗口内笔记",
+      content: "c",
+      notebookId: nbId,
+    });
+    // 合并语义：本轮跑完补一轮，second 的 promise 涵盖补轮 push
+    const second = syncNow();
+    release();
+    await Promise.all([first, second]);
+    fake.hooks.beforeExecute = undefined;
+
+    // 笔记本与笔记都成功推送（云端有行、归属正确、outbox 清空）
+    const cloudNb = tables.notebooks.find((r) => r.id === nbId);
+    expect(cloudNb).toBeDefined();
+    const cloudNote = tables.notes.find((r) => r.id === noteId);
+    expect(cloudNote).toBeDefined();
+    expect(cloudNote!.notebook_id).toBe(nbId);
+    expect((await db.outbox.toArray()).length).toBe(0);
+    // 本地行已获服务端 version 回写，与云端一致
+    const localNote = await db.notes.get(noteId);
+    expect(localNote?.syncVersion).toBe(cloudNote!.version);
   });
 });

@@ -2,9 +2,11 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Check, CloudOff, KeyRound, ShieldOff } from "lucide-react";
+import { ArrowLeft, Check, CloudOff, HardDriveDownload, KeyRound, ShieldOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import { db } from "@/lib/db";
 import { getSessionAuthMethod, getSupabase, isSupabaseConfigured } from "@/lib/supabase/client";
 import { getSyncState, subscribeSync, type SyncState } from "@/lib/sync/sync-engine";
 
@@ -77,6 +79,11 @@ export default function AccountPage() {
   const [pwdBusy, setPwdBusy] = useState(false);
   const [pwdMsg, setPwdMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
+  // 清除本机数据（共享设备上退出前的隐私操作）
+  const [wipeOpen, setWipeOpen] = useState(false);
+  const [wipeBusy, setWipeBusy] = useState(false);
+  const [wipeError, setWipeError] = useState<string | null>(null);
+
   useEffect(() => subscribeSync(setSync), []);
 
   // status 离开 disabled 即视为同步引擎完成初始化（已配置前提下）
@@ -125,6 +132,31 @@ export default function AccountPage() {
 
   /** 本次会话是密码签发的，就一定有密码；否则看本机记录 */
   const hasPassword = pwdSetAt !== null || method === "password";
+
+  /**
+   * 清除本机数据：删除当前用户专属 IndexedDB 库（笔记 / 附件 / 同步队列 /
+   * 搜索索引）+ 本机密码标记，然后 reload 重建空库。
+   * 仅影响本机——云端数据不受影响，下次登录会重新拉取。
+   * 共享设备上退出前使用，避免后续使用者经 DevTools 直接读取本地明文。
+   */
+  const wipeLocalData = async () => {
+    setWipeBusy(true);
+    setWipeError(null);
+    try {
+      // 关闭连接后再删除：打开状态下的 delete() 在部分浏览器会悬挂
+      db.close();
+      await db.delete();
+      try {
+        if (sync.userId) localStorage.removeItem(PWD_MARKER_PREFIX + sync.userId);
+      } catch {
+        // 隐私模式下 localStorage 不可写：忽略
+      }
+      window.location.reload();
+    } catch (err) {
+      setWipeBusy(false);
+      setWipeError(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   const submitPassword = async (e: FormEvent) => {
     e.preventDefault();
@@ -279,7 +311,53 @@ export default function AccountPage() {
             点「设置密码」重设即可。
           </p>
         </section>
+
+        {/* 本机数据：共享设备上退出前的隐私清理 */}
+        <section className="rounded-lg border border-destructive/30 bg-card p-5">
+          <h2 className="flex items-center gap-1.5 text-sm font-medium">
+            <HardDriveDownload className="h-4 w-4" />
+            本机数据
+          </h2>
+          <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+            笔记与图片同时保存在本机浏览器（离线可用）。在共享设备上使用时，
+            清除后他人无法再通过开发者工具读取本地内容；云端数据不受影响，
+            下次登录会自动重新同步。
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="mt-3 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+            onClick={() => {
+              setWipeError(null);
+              setWipeOpen(true);
+            }}
+          >
+            清除本机数据
+          </Button>
+        </section>
       </div>
+
+      <ConfirmDialog
+        open={wipeOpen}
+        title="清除本机数据？"
+        description="将删除本机保存的全部笔记、图片与离线缓存。云端数据不受影响，下次登录会重新拉取。此操作不可撤销。"
+        confirmLabel="清除"
+        onConfirm={() => void wipeLocalData()}
+        onCancel={() => setWipeOpen(false)}
+      />
+
+      {wipeBusy && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 text-sm text-muted-foreground">
+          正在清除本机数据…
+        </div>
+      )}
+
+      {wipeError && (
+        <p className="mx-auto w-full max-w-lg px-4 pb-4 text-xs text-destructive md:px-6">
+          清除失败：{wipeError}
+        </p>
+      )}
     </main>
   );
 }

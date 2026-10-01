@@ -60,6 +60,36 @@ export default function LoginPage() {
 
   const origin = typeof window !== "undefined" ? window.location.origin : undefined;
 
+  /** 邮箱格式前置校验：链接按钮走 onClick，绕过了 form 的原生 type=email 校验 */
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  /** Supabase 常见英文报错 → 中文可操作提示（拿不到匹配时回退原文） */
+  const friendlyAuthError = (message: string, fallback: string): string => {
+    if (/invalid login credentials/i.test(message)) return fallback;
+    if (/email not confirmed/i.test(message)) {
+      return "邮箱尚未验证：请点开邮件里的链接完成验证。";
+    }
+    if (/rate limit|too many requests/i.test(message)) {
+      return "操作过于频繁，请稍候几分钟再试。";
+    }
+    if (/user not found/i.test(message)) {
+      return "该邮箱还没有账号，请先注册。";
+    }
+    if (/token has expired|invalid token|otp_expired/i.test(message)) {
+      return "验证码或链接已失效，请重新发送。";
+    }
+    if (/signups not allowed|signup.*disabled/i.test(message)) {
+      return "当前不允许新用户注册，请联系管理员。";
+    }
+    if (/failed to fetch|networkerror|network request failed/i.test(message)) {
+      return "网络连接失败，请检查网络后重试。";
+    }
+    if (/password should be at least/i.test(message)) {
+      return "密码长度不足，请至少输入 6 位。";
+    }
+    return message;
+  };
+
   /** 邮箱链接：注册与登录同一条通道（首次点击即建号，无需密码） */
   const sendMagicLink = async () => {
     const sb = getSupabase();
@@ -68,12 +98,16 @@ export default function LoginPage() {
       setError("请先填写邮箱");
       return;
     }
+    if (!EMAIL_RE.test(email.trim())) {
+      setError("邮箱格式不正确，请检查后重试。");
+      return;
+    }
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
       const { error: err } = await sb.auth.signInWithOtp({
-        email,
+        email: email.trim(),
         options: { emailRedirectTo: `${origin}/login`, shouldCreateUser: true },
       });
       if (err) throw err;
@@ -84,7 +118,8 @@ export default function LoginPage() {
           : "已发送登录链接到邮箱：点击即自动登录。若收到的是 6 位验证码，可在下方输入完成登录。"
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      setError(friendlyAuthError(message, "发送失败，请稍后重试。"));
     } finally {
       setBusy(false);
     }
@@ -94,18 +129,30 @@ export default function LoginPage() {
   const signInWithPassword = async () => {
     const sb = getSupabase();
     if (!sb) return;
+    if (!email) {
+      setError("请先填写邮箱");
+      return;
+    }
+    if (!EMAIL_RE.test(email.trim())) {
+      setError("邮箱格式不正确，请检查后重试。");
+      return;
+    }
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      const { error: err } = await sb.auth.signInWithPassword({ email, password });
+      const { error: err } = await sb.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
       if (err) throw err;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setError(
-        /invalid login credentials/i.test(message)
-          ? "邮箱或密码不正确。若还没设过密码，请改用「发送登录链接（无需密码）」，登录后在「账号管理」里设置密码。"
-          : message
+        friendlyAuthError(
+          message,
+          "邮箱或密码不正确。若还没设过密码，请改用「发送登录链接（无需密码）」，登录后在「账号管理」里设置密码。"
+        )
       );
     } finally {
       setBusy(false);
@@ -131,7 +178,8 @@ export default function LoginPage() {
       });
       if (err) throw err;
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      setError(friendlyAuthError(message, "验证失败，请检查验证码是否正确。"));
     } finally {
       setBusy(false);
     }

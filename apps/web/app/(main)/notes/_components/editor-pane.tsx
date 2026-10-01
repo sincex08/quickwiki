@@ -197,7 +197,8 @@ export function EditorPane() {
     if (!id) return;
     pendingRef.current = { id, content: markdown };
     latestContentRef.current = markdown;
-    setSaveState("saving");
+    // 幂等 setState：连续打字期间状态保持 "saving"，不再每键触发整树重渲染
+    setSaveState((s) => (s === "saving" ? s : "saving"));
     debouncedSave(id, markdown);
   };
 
@@ -301,7 +302,7 @@ export function EditorPane() {
     const id = note?.id ?? activeNoteId;
     if (!id) return;
     setTitleDraft(value);
-    setSaveState("saving");
+    setSaveState((s) => (s === "saving" ? s : "saving"));
     pendingTitleRef.current = { id, value };
     debouncedTitleSave(id, value);
   };
@@ -652,25 +653,16 @@ export function EditorPane() {
         />
       )}
 
-      {/* 字数状态条（三模式通用；移动端收起以省空间） */}
+      {/* 字数状态条（三模式通用；移动端收起以省空间）。
+          独立组件 + useMemo：正文未变化时跳过全文统计，
+          打字/标题输入触发的父级重渲染不再连带重算字数 */}
       <div
         className={cn(
           "hidden shrink-0 items-center justify-end border-t py-0.5 text-[11px] text-muted-foreground md:flex",
           PANE_PX
         )}
       >
-        {(() => {
-          const wc = countWords(latestContent);
-          return (
-            <span>
-              {wc.total.toLocaleString()} 字
-              <span className="ml-2 text-muted-foreground/70">
-                {wc.chinese.toLocaleString()} 中文 · {wc.words.toLocaleString()}{" "}
-                英文词 · {wc.chars.toLocaleString()} 字符
-              </span>
-            </span>
-          );
-        })()}
+        <WordCountBar content={latestContent} />
       </div>
 
       <ConfirmDialog
@@ -692,5 +684,19 @@ export function EditorPane() {
         onExternalContentChange={applyExternalContent}
       />
     </div>
+  );
+}
+
+/** 字数状态条内容：useMemo 缓存全文统计，正文未变时父级重渲染零成本 */
+function WordCountBar({ content }: { content: string }) {
+  const wc = useMemo(() => countWords(content), [content]);
+  return (
+    <span>
+      {wc.total.toLocaleString()} 字
+      <span className="ml-2 text-muted-foreground/70">
+        {wc.chinese.toLocaleString()} 中文 · {wc.words.toLocaleString()} 英文词 ·{" "}
+        {wc.chars.toLocaleString()} 字符
+      </span>
+    </span>
   );
 }

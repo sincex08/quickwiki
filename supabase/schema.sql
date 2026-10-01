@@ -113,6 +113,34 @@ create index if not exists attachments_user_server_updated_idx
 create index if not exists attachments_note_idx
   on public.attachments (user_id, note_id);
 
+-- ---------- 附件归属一致性（note_id 必须指向同一用户的笔记） ----------
+-- RLS 只保证 user_id = auth.uid()；若不校验 note_id 归属，恶意客户端可
+-- 让附件行挂在他人笔记上，对方删笔记时 FK cascade 会连带删行并触发
+-- Storage 清理（低危完整性 / 资源干扰）。SECURITY DEFINER 以读取 notes。
+create or replace function public.assert_attachment_note_owner()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  note_owner uuid;
+begin
+  select user_id into note_owner
+  from public.notes
+  where id = new.note_id;
+  if note_owner is not null and note_owner <> new.user_id then
+    raise exception 'attachment.note_id 归属不一致（note 属于其他用户）'
+      using errcode = '42501';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists attachments_note_owner_check on public.attachments;
+create trigger attachments_note_owner_check
+  before insert or update of note_id, user_id on public.attachments
+  for each row execute function public.assert_attachment_note_owner();
+
 -- ---------- Realtime：增量拉取与远端变更推送 ----------
 do $$
 begin
