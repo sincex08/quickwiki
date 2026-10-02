@@ -1,14 +1,23 @@
 "use client";
 
 import { useMemo, useState, type ReactNode } from "react";
-import { AlignJustify, FileText, Folder, Plus, X } from "lucide-react";
+import {
+  AlignJustify,
+  ChevronLeft,
+  FileText,
+  Folder,
+  Plus,
+  X,
+} from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { Note } from "@quickwiki/shared";
+import { NOTEBOOK_COLORS } from "@quickwiki/shared";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/notes/empty-state";
 import { NoteList } from "@/components/notes/note-list";
 import { NotebookCard } from "@/components/notebooks/notebook-card";
+import { NotebookDialog } from "@/components/notebooks/notebook-dialog";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { useNoteDrag } from "@/components/layout/use-note-drag";
 import { useNotebooks, useNotes, useNotesIndex } from "@/hooks/use-data";
@@ -56,35 +65,57 @@ function SectionLabel({
   );
 }
 
-/** 当前过滤条件展示。
- *  笔记本为当前「位置」而非临时筛选：以醒目标题呈现，
- *  不可在此清除/编辑，切换位置一律走左栏；
+/** 当前作用域展示。
+ *  笔记本为当前「位置」而非临时筛选：左侧返回箭头回父级（顶层/未分类回
+ *  笔记首页），选中笔记本时右侧提供「子笔记本」新建入口；
  *  标签是叠加的临时筛选，保留 chip + 可清除。 */
-function FilterChips() {
+function FilterChips({
+  onCreateChild,
+}: {
+  onCreateChild: () => void;
+}) {
   const notebookFilter = useUIStore((s) => s.notebookFilter);
   const tagFilter = useUIStore((s) => s.tagFilter);
   const setTagFilter = useUIStore((s) => s.setTagFilter);
+  const setNotebookFilter = useUIStore((s) => s.setNotebookFilter);
   const { notebooks } = useNotebooks();
 
   const notebook = notebooks.find((n) => n.id === notebookFilter);
   const uncategorized = notebookFilter === "none";
   if (!notebook && !uncategorized && !tagFilter) return null;
 
+  // 返回上一级：父笔记本；未分类 / 顶层笔记本 → null（笔记首页）
+  const parent = notebook?.parentId ?? null;
+  const parentName = parent
+    ? (notebooks.find((n) => n.id === parent)?.name ?? "上一级")
+    : null;
+
   return (
     <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b px-3 py-2">
       {(notebook || uncategorized) && (
-        <div className="flex min-w-0 items-center gap-2">
-          <span
-            className={cn(
-              "h-2.5 w-2.5 shrink-0 rounded-full",
-              uncategorized && "border border-dashed border-muted-foreground"
-            )}
-            style={notebook ? { backgroundColor: notebook.color } : undefined}
-          />
-          <span className="truncate text-sm font-semibold">
-            {notebook ? notebook.name : "未分类"}
-          </span>
-        </div>
+        <>
+          <button
+            type="button"
+            aria-label={parentName ? `返回「${parentName}」` : "返回上一级"}
+            title={parentName ? `返回「${parentName}」` : "返回上一级"}
+            onClick={() => setNotebookFilter(parent)}
+            className="-ml-1 shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+          <div className="flex min-w-0 items-center gap-2">
+            <span
+              className={cn(
+                "h-2.5 w-2.5 shrink-0 rounded-full",
+                uncategorized && "border border-dashed border-muted-foreground"
+              )}
+              style={notebook ? { backgroundColor: notebook.color } : undefined}
+            />
+            <span className="truncate text-sm font-semibold">
+              {notebook ? notebook.name : "未分类"}
+            </span>
+          </div>
+        </>
       )}
       {tagFilter && (
         <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs">
@@ -98,6 +129,17 @@ function FilterChips() {
             <X className="h-3 w-3" />
           </button>
         </span>
+      )}
+      {notebook && (
+        <button
+          type="button"
+          onClick={onCreateChild}
+          className="ml-auto inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          title={`在「${notebook.name}」下新建子笔记本`}
+        >
+          <Plus className="h-3.5 w-3.5" />
+          子笔记本
+        </button>
       )}
     </div>
   );
@@ -164,9 +206,12 @@ export function NoteListPane() {
     }
   };
 
+  // ===== 在当前作用域下新建子笔记本（与侧栏共用同一对话框组件） =====
+  const [childDialogOpen, setChildDialogOpen] = useState(false);
+
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <FilterChips />
+      <FilterChips onCreateChild={() => setChildDialogOpen(true)} />
 
       {/* 拖动时靠它做靠近边缘自动滚动 */}
       <div className="min-h-0 flex-1 overflow-y-auto" data-note-drag-scroll>
@@ -278,6 +323,18 @@ export function NoteListPane() {
         confirmLabel="删除"
         onConfirm={confirmDelete}
         onCancel={() => setPendingDelete(null)}
+      />
+
+      {/* 新建子笔记本：默认挂在当前作用域下（FilterChips 的「+ 子笔记本」入口） */}
+      <NotebookDialog
+        open={childDialogOpen}
+        onOpenChange={setChildDialogOpen}
+        editingId={null}
+        initialName=""
+        initialColor={NOTEBOOK_COLORS[0]}
+        initialParentId={
+          notebookFilter && notebookFilter !== "none" ? notebookFilter : null
+        }
       />
     </div>
   );

@@ -66,10 +66,7 @@ export default function MainLayout({
         </Sheet>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <Header
-            onNewNote={requestNewNote}
-            onOpenSidebar={() => setSidebarOpen(true)}
-          />
+          <Header onOpenSidebar={() => setSidebarOpen(true)} />
           <main className="min-h-0 flex-1">{children}</main>
         </div>
 

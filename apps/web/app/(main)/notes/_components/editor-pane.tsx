@@ -57,11 +57,11 @@ import { OutlineMenuButton, OutlineSubmenu } from "@/components/editor/outline-m
 const PANE_PX = "px-4 md:px-6 lg:px-8";
 
 /**
- * 文档列宽约束（C1）：标题 / 标签 / 三种模式的正文统一限制在 max-w-3xl 并居中。
- * 宽屏下行长回到中文舒适区间（约 60+ 字/行），三者的左边缘对齐关系保持不变
- * （三者内边距一致）；窄于列宽时回退为全宽，移动端零变化。
+ * 文档列宽约束（C1）：标题 / 标签 / 三种模式的正文统一限制在 max-w-5xl 并居中。
+ * 宽屏下行长回到舒适区间且表格 / 代码块有足够横向空间，三者的左边缘对齐关系
+ * 保持不变（三者内边距一致）；窄于列宽时回退为全宽，移动端零变化。
  */
-const DOC_COL = "mx-auto w-full max-w-3xl";
+const DOC_COL = "mx-auto w-full max-w-5xl";
 
 export function EditorPane() {
   const activeNoteId = useUIStore((s) => s.activeNoteId);

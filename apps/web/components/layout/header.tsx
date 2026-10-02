@@ -279,11 +279,10 @@ function SyncChip() {
 }
 
 export interface HeaderProps {
-  onNewNote: () => void;
   onOpenSidebar: () => void;
 }
 
-export function Header({ onNewNote, onOpenSidebar }: HeaderProps) {
+export function Header({ onOpenSidebar }: HeaderProps) {
   const { theme, toggleTheme } = useTheme();
   const activeNoteId = useUIStore((s) => s.activeNoteId);
   const [exporting, setExporting] = useState(false);
@@ -346,28 +345,9 @@ export function Header({ onNewNote, onOpenSidebar }: HeaderProps) {
         <SearchBox />
       </div>
 
-      {/* ml-auto：搜索框在桌面端有 max-w-md 封顶，不自动撑满，
+      {/* ml-auto：搜索框在桌面端有 max-w-md 封顶，不自动撑开，
           必须由按钮组吸收剩余空间，否则会停在页中部 */}
       <div className="ml-auto flex shrink-0 items-center gap-0.5 md:gap-1">
-        <Button
-          size="sm"
-          className="hidden gap-1.5 sm:inline-flex"
-          onClick={onNewNote}
-        >
-          <Plus className="h-4 w-4" />
-          新建笔记
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="sm:hidden"
-          onClick={onNewNote}
-          aria-label="新建笔记"
-          title="新建笔记"
-        >
-          <Plus className="h-5 w-5" />
-        </Button>
-
         {/* 移动端：导出/功能说明/主题收进「…」，把宽度让给搜索框 */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
