@@ -134,9 +134,56 @@ export function TipTapEditor({
       editorRef.current = e;
     },
     onUpdate: ({ editor: e }) => {
-      onChange?.(e.storage.markdown.getMarkdown());
+      const markdown = e.storage.markdown.getMarkdown();
+      lastEmittedRef.current = markdown;
+      onChange?.(markdown);
     },
   });
+
+  // ===== 外部内容同步（与 MarkdownSource/HybridPreview 同款三段式） =====
+  // content 只在创建编辑器时用一次；云同步回写 / 附件抽屉改写正文后 prop 变化，
+  // 不同步的话编辑器 DOM 仍是旧内容，下一次敲键以旧基底全文序列化——静默
+  // 覆盖外部修改。判定：与最近一次本组件发出的 Markdown 不一致且 300ms 后
+  // 仍不一致（跳过落盘回读的瞬时回退窗口）；聚焦中暂存、失焦应用（不打断输入）。
+  const lastEmittedRef = useRef(content);
+  const pendingExternalRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!editor) return;
+    if (content === lastEmittedRef.current) {
+      // 回读已追平本组件内容：早期回退窗口暂存的外部快照作废
+      pendingExternalRef.current = null;
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (content === lastEmittedRef.current) return;
+      if (editor.isFocused) {
+        pendingExternalRef.current = content;
+        return;
+      }
+      lastEmittedRef.current = content;
+      pendingExternalRef.current = null;
+      // emitUpdate:false——外部应用不是用户编辑，不触发 onChange 回环
+      editor.commands.setContent(content, false);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [content, editor]);
+
+  useEffect(() => {
+    if (!editor) return;
+    const applyPending = () => {
+      const pending = pendingExternalRef.current;
+      if (pending === null) return;
+      pendingExternalRef.current = null;
+      if (pending === lastEmittedRef.current) return;
+      lastEmittedRef.current = pending;
+      editor.commands.setContent(pending, false);
+    };
+    editor.on("blur", applyPending);
+    return () => {
+      editor.off("blur", applyPending);
+    };
+  }, [editor]);
 
   // 注册活动编辑器（附件抽屉等外部组件跨组件插入引用）
   useEffect(() => {

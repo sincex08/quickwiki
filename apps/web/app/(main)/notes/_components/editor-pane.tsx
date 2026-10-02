@@ -45,6 +45,7 @@ import {
 } from "@/stores/use-ui-store";
 import { useToastStore } from "@/stores/use-toast-store";
 import { noteRepo } from "@/lib/data/repository";
+import { subscribe } from "@/lib/events";
 import { releaseAllObjectUrls } from "@/lib/attachments/resolve";
 import { cn, debounce, extractTitle } from "@/lib/utils";
 import { countWords } from "@/lib/word-count";
@@ -210,6 +211,33 @@ export function EditorPane() {
     return () => window.removeEventListener("quickwiki:flush-save", onFlush);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 多端更新提示：云同步回写了当前打开的笔记（本地无未落盘编辑时）。
+  // 内容本身由各模式的「外部内容同步」接管，这里只补用户感知——
+  // 否则另一端的修改悄悄出现/被本地覆盖，全程无感。
+  const remoteToastAtRef = useRef(0);
+  useEffect(() => {
+    const unsub = subscribe("notes", (e) => {
+      if (!e.remote || !activeNoteId) return;
+      if (!e.ids.includes(activeNoteId)) return;
+      // 本地有未落盘编辑：本地胜出（LWW），提示反而误导
+      if (pendingRef.current || pendingTitleRef.current) return;
+      // 批量同步可能对同一行连发多条事件，10s 冷却去重
+      const now = Date.now();
+      if (now - remoteToastAtRef.current < 10_000) return;
+      remoteToastAtRef.current = now;
+      void noteRepo
+        .findById(activeNoteId)
+        .then((n) => {
+          if (n) {
+            useToastStore.getState().show(`「${n.title}」已在其它设备更新`, "success");
+          }
+        })
+        .catch(() => {});
+    });
+    return unsub;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeNoteId]);
 
   // 关闭标签页 / 移动端切后台 / 锁屏时立即落盘防抖中的草稿：
   // 这些路径不会触发组件卸载 cleanup，1s 防抖窗口内的最后一次输入会随
