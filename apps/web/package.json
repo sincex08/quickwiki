@@ -10,7 +10,8 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "clean": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true});require('fs').rmSync('out',{recursive:true,force:true})\"",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prebuild": "node scripts/gen-sw-version.mjs"
   },
   "dependencies": {
     "@quickwiki/shared": "workspace:*",

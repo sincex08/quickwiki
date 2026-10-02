@@ -41,3 +41,6 @@ vibe_images/
 # AI assistant local data
 .workbuddy/
 .zcode/
+
+# SW 构建版本（prebuild 生成）
+apps/web/public/sw-version.js

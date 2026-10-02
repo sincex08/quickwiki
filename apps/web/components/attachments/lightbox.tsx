@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 
@@ -15,18 +15,42 @@ interface LightboxProps {
  * 用 Portal + 自管状态实现，不占用 Radix Dialog 栈，
  * 避免与抽屉/确认框嵌套时的焦点管理冲突。
  *
+ * 自管焦点：打开时初始聚焦关闭按钮，Tab 在层内循环（不穿透到被遮罩的
+ * 背景），关闭后焦点归还打开前的元素——绕开 Radix 就得自己补这三件事。
+ *
  * 注意：Portal 挂到 body 后，覆盖层虽然视觉上全屏，
  * 但点击仍需依赖该元素自身命中。为保证「点击遮罩关闭」在
  * 移动端和任意布局下都可靠，这里用 onPointerDown/onClick 双保险，
  * 并在关闭按钮上 stopPropagation，避免与遮罩关闭重复触发。
  */
 export function Lightbox({ src, alt, onClose }: LightboxProps) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+
   useEffect(() => {
     if (!src) return;
+    // 打开时记录来源焦点并初始聚焦关闭按钮（键盘用户 Esc/Enter 直接可控）
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    closeRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
         onClose();
+      } else if (e.key === "Tab") {
+        // 简易焦点陷阱：在本层可聚焦元素间循环，不穿透到背景
+        const root = rootRef.current;
+        if (!root) return;
+        const focusables = root.querySelectorAll<HTMLElement>(
+          "button[href], button:not([disabled])"
+        );
+        if (focusables.length === 0) return;
+        e.preventDefault();
+        const current = document.activeElement;
+        const idx = Array.prototype.indexOf.call(focusables, current);
+        const next = e.shiftKey
+          ? (idx <= 0 ? focusables.length - 1 : idx - 1)
+          : (idx === focusables.length - 1 ? 0 : idx + 1);
+        focusables[next]?.focus();
       }
     };
     document.addEventListener("keydown", onKey, true);
@@ -35,6 +59,8 @@ export function Lightbox({ src, alt, onClose }: LightboxProps) {
     return () => {
       document.removeEventListener("keydown", onKey, true);
       document.body.style.overflow = prevOverflow;
+      // 焦点归还：关闭后键盘位置回到打开预览的地方（缩略图/预览按钮）
+      previouslyFocused?.focus?.();
     };
   }, [src, onClose]);
 
@@ -46,6 +72,7 @@ export function Lightbox({ src, alt, onClose }: LightboxProps) {
 
   return createPortal(
     <div
+      ref={rootRef}
       role="dialog"
       aria-modal="true"
       aria-label={alt || "图片预览"}
@@ -73,6 +100,7 @@ export function Lightbox({ src, alt, onClose }: LightboxProps) {
       onPointerUp={stop}
     >
       <button
+        ref={closeRef}
         type="button"
         aria-label="关闭预览"
         className="absolute right-4 top-4 inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"

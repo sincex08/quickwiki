@@ -21,7 +21,8 @@ export function Toaster() {
       {toasts.map((t) => (
         <div
           key={t.id}
-          role="status"
+          // 错误类用 alert（读屏立即打断播报），普通提示 status（礼貌性播报）
+          role={t.variant === "error" ? "alert" : "status"}
           className={cn(
             "pointer-events-auto flex w-full items-start gap-2 rounded-lg border px-3 py-2 text-sm shadow-lg",
             t.variant === "error"

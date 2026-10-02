@@ -340,7 +340,14 @@ export async function createAttachmentsFromFiles(
         await createAttachmentFromFile(file, noteId, opts.compress)
       );
     } catch (err) {
-      const reason = err instanceof Error ? err.message : "上传失败";
+      // 配额满给专属文案：泛化的「上传失败」会让用户误以为网络/服务问题
+      const quotaExceeded =
+        (err as { name?: string } | null)?.name === "QuotaExceededError";
+      const reason = quotaExceeded
+        ? "本机存储空间不足，无法保存图片（可清理未引用附件后重试）"
+        : err instanceof Error
+          ? err.message
+          : "上传失败";
       result.failed.push({ filename: file.name, reason });
       useToastStore.getState().show(`${file.name}：${reason}`, "error");
     }

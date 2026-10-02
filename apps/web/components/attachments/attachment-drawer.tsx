@@ -82,6 +82,46 @@ function useIsMobile(): boolean {
   return mobile;
 }
 
+/** 本机存储用量（storage.estimate）：配额吃紧前给用户可感知的引导 */
+function StorageUsage() {
+  const [usage, setUsage] = useState<{ used: number; quota: number } | null>(
+    null
+  );
+  useEffect(() => {
+    let active = true;
+    void navigator.storage
+      ?.estimate?.()
+      .then((est) => {
+        if (active && typeof est.usage === "number" && typeof est.quota === "number") {
+          setUsage({ used: est.usage, quota: est.quota });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+  if (!usage || usage.quota === 0) return null;
+  const ratio = usage.used / usage.quota;
+  const tight = ratio >= 0.8;
+  return (
+    <p
+      className={cn(
+        "text-[11px] leading-tight",
+        tight ? "text-destructive" : "text-muted-foreground/70"
+      )}
+      title={
+        tight
+          ? "本机存储空间紧张：图片可能保存失败，建议清理未引用附件"
+          : "本机浏览器分配给本站点的存储空间"
+      }
+    >
+      本机存储 {formatBytes(usage.used)} / {formatBytes(usage.quota)}
+      {tight ? " · 空间紧张，建议清理未引用附件" : ""}
+    </p>
+  );
+}
+
 /** 网格缩略图：blob 直读 or 公开 URL 回退；无 blob 无回退显示占位 */
 function Thumb({ record }: { record: AttachmentRecord }) {
   const src = useAttachmentImgSrc(`${ATT_PROTOCOL}${record.id}`);
@@ -285,7 +325,9 @@ export function AttachmentDrawer({
               <Images className="h-4 w-4" />
               附件 · {records.length}
             </SheetTitle>
-            <div className="flex-1" />
+            <div className="min-w-0 flex-1">
+              <StorageUsage />
+            </div>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="附件操作">

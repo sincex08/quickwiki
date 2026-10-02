@@ -298,6 +298,25 @@ export function Toolbar({ editor, className }: ToolbarProps) {
               在右侧插入列
             </DropdownMenuItem>
             <DropdownMenuSeparator />
+            <DropdownMenuItem
+              disabled={!editor.can().mergeCells()}
+              onClick={() => editor.chain().focus().mergeCells().run()}
+            >
+              合并单元格
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={!editor.can().splitCell()}
+              onClick={() => editor.chain().focus().splitCell().run()}
+            >
+              拆分单元格
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => editor.chain().focus().toggleHeaderRow().run()}>
+              切换表头行
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => editor.chain().focus().toggleHeaderColumn().run()}>
+              切换表头列
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem onClick={() => editor.chain().focus().deleteRow().run()}>
               删除当前行
             </DropdownMenuItem>

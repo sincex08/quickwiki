@@ -90,7 +90,9 @@ export function TipTapEditor({
       }),
       TaskList,
       TaskItem.configure({ nested: true }),
-      Table.configure({ resizable: true }),
+      // 不开 resizable：Markdown（GFM 管道表）不序列化 colwidth，
+      // 拖完刷新即丢，误导性手柄不如不给
+      Table,
       TableRow,
       TableHeader,
       TableCell,

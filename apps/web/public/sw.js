@@ -5,9 +5,21 @@
  * 策略：
  * - 应用外壳（页面导航）：网络优先，失败时回退缓存，保证离线可用；
  * - 静态资源（_next/、图片、字体）：缓存优先 + 后台更新，加快二次加载。
+ *
+ * 版本号由构建时生成的 /sw-version.js 注入（prebuild 脚本写入构建时间戳）：
+ * 每次部署 sw-version.js 字节变化 → 浏览器据 imported script 的差异判定
+ * SW 有更新 → 装新 worker、activate 清旧缓存。此前 VERSION 硬编码不随构建
+ * 变化，SW 永不更新、旧 hash chunk 在 runtime 缓存里持续泄漏膨胀。
  */
 
-const VERSION = "v2";
+let VERSION = "dev";
+try {
+  // 定义 self.__BUILD_ID__；dev 直跑（public 下无该文件）时 404 走 catch
+  importScripts("/sw-version.js");
+  if (self.__BUILD_ID__) VERSION = self.__BUILD_ID__;
+} catch {
+  // 保持默认版本名：缓存仍按名字隔离，只是不做跨构建清理
+}
 const STATIC_CACHE = `quickwiki-static-${VERSION}`;
 const RUNTIME_CACHE = `quickwiki-runtime-${VERSION}`;
 /** 运行时缓存条目上限：_next chunk 随构建换名会持续累积，FIFO 淘汰最旧 */

@@ -9,6 +9,7 @@ import { CommandPalette } from "@/components/command-palette";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { useNoteActions } from "@/hooks/use-note-actions";
 import { useHotkeys } from "@/hooks/use-hotkeys";
+import { useOnline } from "@/hooks/use-online";
 import { useUIStore, REQUEST_NEW_NOTE_EVENT } from "@/stores/use-ui-store";
 
 /**
@@ -24,6 +25,7 @@ export default function MainLayout({
 }) {
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   const setSidebarOpen = useUIStore((s) => s.setSidebarOpen);
+  const online = useOnline();
   const { createNote } = useNoteActions();
   // 全局快捷键（桌面端）：Ctrl+K/N/F/S/E、Ctrl+/
   useHotkeys();
@@ -67,6 +69,15 @@ export default function MainLayout({
 
         <div className="flex min-w-0 flex-1 flex-col">
           <Header onOpenSidebar={() => setSidebarOpen(true)} />
+          {/* 离线指示条：断网期间明确「改动保存在本机」，与同步故障区分 */}
+          {!online && (
+            <div
+              role="status"
+              className="shrink-0 border-b bg-amber-500/10 px-3 py-1.5 text-center text-xs text-amber-600 dark:text-amber-400"
+            >
+              离线中 · 改动保存在本机，联网后自动同步
+            </div>
+          )}
           <main className="min-h-0 flex-1">{children}</main>
         </div>
 

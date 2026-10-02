@@ -34,6 +34,7 @@ import { SearchBox } from "@/components/search/search-box";
 import { useTheme } from "@/components/theme-provider";
 import { useUIStore } from "@/stores/use-ui-store";
 import { useToastStore } from "@/stores/use-toast-store";
+import { useOnline } from "@/hooks/use-online";
 import { getSearchManager } from "@/lib/search/search-manager";
 import { noteRepo } from "@/lib/data/repository";
 import { exportAllAsZip, exportNoteAsMarkdown } from "@/lib/export";
@@ -149,6 +150,7 @@ function SyncChip() {
   const [sync, setSync] = useState<SyncState>(() => getSyncState());
   const [deadCount, setDeadCount] = useState(0);
   const [deadOpen, setDeadOpen] = useState(false);
+  const online = useOnline();
 
   useEffect(() => subscribeSync(setSync), []);
 
@@ -176,8 +178,9 @@ function SyncChip() {
     );
   }
 
-  const statusText =
-    sync.status === "syncing"
+  const statusText = !online
+    ? "离线中 · 改动保存在本机，联网后自动同步"
+    : sync.status === "syncing"
       ? "正在同步…"
       : sync.status === "error"
         ? `同步失败：${sync.error ?? "未知错误"}`
@@ -211,7 +214,8 @@ function SyncChip() {
           className={cn(
             "h-4 w-4",
             sync.status === "syncing" && "animate-spin",
-            (sync.status === "error" || deadCount > 0) && "text-destructive"
+            (sync.status === "error" || deadCount > 0) && "text-destructive",
+            !online && "text-amber-500"
           )}
         />
         {/* 常驻错误角标：错误详情在 hover 提示与账号菜单里，不悬停也能注意到 */}

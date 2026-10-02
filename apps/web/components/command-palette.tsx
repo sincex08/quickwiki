@@ -212,6 +212,13 @@ export function CommandPalette() {
             onChange={(e) => setQuery(e.target.value)}
             placeholder="输入命令或搜索笔记…"
             aria-label="命令与笔记搜索"
+            role="combobox"
+            aria-expanded={rows.length > 0}
+            aria-controls="command-palette-list"
+            aria-activedescendant={
+              rows.length > 0 ? `command-palette-opt-${cursor}` : undefined
+            }
+            aria-autocomplete="list"
             onKeyDown={(e) => {
               if (e.key === "ArrowDown") {
                 e.preventDefault();
@@ -227,7 +234,13 @@ export function CommandPalette() {
             className="h-12 w-full bg-transparent px-4 text-sm outline-none placeholder:text-muted-foreground"
           />
         </div>
-        <div ref={listRef} className="max-h-80 overflow-y-auto p-1.5">
+        <div
+          ref={listRef}
+          id="command-palette-list"
+          role="listbox"
+          aria-label="命令与笔记结果"
+          className="max-h-80 overflow-y-auto p-1.5"
+        >
           {rows.length === 0 && (
             <p className="px-3 py-6 text-center text-sm text-muted-foreground">
               没有匹配的命令或笔记
@@ -246,6 +259,9 @@ export function CommandPalette() {
               <button
                 key={command.id}
                 type="button"
+                role="option"
+                aria-selected={cursor === index}
+                id={`command-palette-opt-${index}`}
                 data-active={cursor === index}
                 onClick={() => activate({ kind: "command", command })}
                 onMouseEnter={() => setCursor(index)}
@@ -277,6 +293,9 @@ export function CommandPalette() {
               <button
                 key={item.note.id}
                 type="button"
+                role="option"
+                aria-selected={cursor === index}
+                id={`command-palette-opt-${index}`}
                 data-active={cursor === index}
                 onClick={() => activate({ kind: "note", item })}
                 onMouseEnter={() => setCursor(index)}
