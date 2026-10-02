@@ -595,11 +595,17 @@ async function push(sb: SupabaseClient): Promise<string | null> {
   let lastError: string | null = null;
   let deadCount = 0;
   for (const entry of entries) {
-    // dead 条目：连续失败达上限的毒丸，跳过（无限重试会卡住整条同步管线）
-    if (entry.dead) {
+    // 处理前重读当前行：入队快照后条目可能已被更新的操作覆盖（典型：创建后
+    // 立即删除，同 key 被新修订覆盖为墓碑）。按过期快照推送会把「已撤销的
+    // 意图」推上服务端——比如拿着过期的 update 快照去执行删除裁决。跳过，
+    // 新意图由下轮同步处理。
+    const cur = await db.outbox.get(entry.key);
+    if (!cur) continue;
+    if (cur.dead) {
       deadCount += 1;
       continue;
     }
+    if (cur.revision !== entry.revision) continue;
     try {
       if (entry.kind === "note") {
         await pushNote(sb, entry);
@@ -899,6 +905,33 @@ async function hasSortOrderColumn(sb: SupabaseClient): Promise<boolean> {
   throw new Error(`sort_order 列探测失败：${probe.error.message}`);
 }
 
+/**
+ * push 成功后的意图校验：网络写期间条目可能被「删除」的新修订覆盖
+ * （创建后立即删除是最高频路径）。若不处理，刚写入的远端存活行会在下轮
+ * pushTombstone 的时间裁决中「让位」——它的 server_updated_at（本设备刚
+ * 写入）必然晚于删除入队时刻，已删笔记会被本设备自己的过期 push 复活。
+ * 这里直接按刚拿到的 version 条件删除远端行（必然命中，不依赖两端时钟
+ * 比较），返回 true 让调用方跳过 saveLocalVersion（本地行已删）。
+ * 命中失败（并发再变）时下轮由新修订的 pushTombstone 重取远端现状裁决。
+ */
+async function supersededByDelete(
+  sb: SupabaseClient,
+  table: SyncTable,
+  entry: OutboxEntry,
+  remote: RemoteRowMeta
+): Promise<boolean> {
+  const cur = await db.outbox.get(entry.key);
+  if (!cur || cur.revision === entry.revision || !cur.deleted) return false;
+  const del = await sb
+    .from(table)
+    .update({ deleted_at: new Date(cur.queuedAt).toISOString() })
+    .eq("id", entry.entityId)
+    .eq("version", remote.version)
+    .select();
+  if (del.error) throw new Error(del.error.message);
+  return true;
+}
+
 async function pushNote(
   sb: SupabaseClient,
   entry: OutboxEntry
@@ -940,6 +973,7 @@ async function pushNote(
     const remote = await fetchRemote(sb, "notes", note.id);
     if (!remote) {
       const saved = await insertRemote(sb, "notes", row);
+      if (await supersededByDelete(sb, "notes", entry, saved)) return;
       await saveLocalVersion("note", note.id, saved.version);
       return;
     }
@@ -963,11 +997,9 @@ async function pushNote(
     .select();
   if (updated.error) throw new Error(updated.error.message);
   if (updated.data && updated.data.length > 0) {
-    await saveLocalVersion(
-      "note",
-      note.id,
-      (updated.data[0] as RemoteRowMeta).version
-    );
+    const saved = updated.data[0] as RemoteRowMeta;
+    if (await supersededByDelete(sb, "notes", entry, saved)) return;
+    await saveLocalVersion("note", note.id, saved.version);
     return;
   }
 
@@ -975,6 +1007,7 @@ async function pushNote(
   const remote = await fetchRemote(sb, "notes", note.id);
   if (!remote) {
     const saved = await insertRemote(sb, "notes", row);
+    if (await supersededByDelete(sb, "notes", entry, saved)) return;
     await saveLocalVersion("note", note.id, saved.version);
     return;
   }
@@ -1017,6 +1050,7 @@ async function pushNotebook(
     const remote = await fetchRemote(sb, "notebooks", nb.id);
     if (!remote) {
       const saved = await insertRemote(sb, "notebooks", row);
+      if (await supersededByDelete(sb, "notebooks", entry, saved)) return;
       await saveLocalVersion("notebook", nb.id, saved.version);
       return;
     }
@@ -1039,17 +1073,16 @@ async function pushNotebook(
     .select();
   if (updated.error) throw new Error(updated.error.message);
   if (updated.data && updated.data.length > 0) {
-    await saveLocalVersion(
-      "notebook",
-      nb.id,
-      (updated.data[0] as RemoteRowMeta).version
-    );
+    const saved = updated.data[0] as RemoteRowMeta;
+    if (await supersededByDelete(sb, "notebooks", entry, saved)) return;
+    await saveLocalVersion("notebook", nb.id, saved.version);
     return;
   }
 
   const remote = await fetchRemote(sb, "notebooks", nb.id);
   if (!remote) {
     const saved = await insertRemote(sb, "notebooks", row);
+    if (await supersededByDelete(sb, "notebooks", entry, saved)) return;
     await saveLocalVersion("notebook", nb.id, saved.version);
     return;
   }

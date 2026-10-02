@@ -248,11 +248,14 @@ describe("push：请求期间的本地编辑保护", () => {
     release();
     await syncing;
 
-    // 旧回执只 patch 版本（对已删 key 是 no-op），不得复活本地记录
+    // 旧回执只 patch 版本（对已删 key 是 no-op），不得复活本地记录；
+    // 守卫发现删除意图后立即按刚写入的版本补偿删除远端行，pull 应用墓碑时
+    // 同轮收敛清掉队列（新一代删除无需再等下一轮）
     expect(await db.notes.get("n-del")).toBeUndefined();
-    expect(await db.outbox.get("note:n-del")).toBeDefined();
+    expect(await db.outbox.get("note:n-del")).toBeUndefined();
+    expect(tables.notes.find((r) => r.id === "n-del")!.deleted_at).not.toBeNull();
 
-    // 队列里的新一代删除操作把远端打成墓碑
+    // 第二轮幂等收敛
     await syncNow();
     expect(tables.notes.find((r) => r.id === "n-del")!.deleted_at).not.toBeNull();
     expect(await db.outbox.get("note:n-del")).toBeUndefined();
@@ -447,6 +450,49 @@ describe("pull：分页与游标", () => {
     tables.notes.push(remoteNote({ id: "r999", server_updated_at: clock.at(5000) }));
     await syncNow();
     expect(await db.notes.count()).toBe(251);
+  });
+});
+
+describe("push：创建在途时被删除覆盖（不复活）", () => {
+  it("insert 落地后发现条目已被删除修订覆盖：立即按版本补偿删除远端行", async () => {
+    const note = localNote({ id: "race-note" });
+    await db.notes.put(note);
+    await db.outbox.put({
+      key: "note:race-note",
+      kind: "note",
+      entityId: "race-note",
+      deleted: false,
+      queuedAt: 1,
+      revision: "rev-a",
+    });
+    // insert 请求发起瞬间模拟用户删除：本地行删除 + 删除意图以新修订覆盖
+    fake.hooks.beforeExecute = (req) => {
+      if (req.mode === "insert" && req.table === "notes") {
+        void db.notes.delete("race-note");
+        void db.outbox.put({
+          key: "note:race-note",
+          kind: "note",
+          entityId: "race-note",
+          deleted: true,
+          // 删除入队时刻早于服务端插入完成的 server_updated_at：
+          // 无补偿时下轮 pushTombstone 会误判「远端较新」而让位复活
+          queuedAt: 1000,
+          revision: "rev-b",
+        });
+      }
+    };
+    await syncNow();
+    fake.hooks.beforeExecute = undefined;
+    await syncNow();
+
+    // 本地不复活
+    expect(await db.notes.get("race-note")).toBeUndefined();
+    // 远端行被补偿删除（墓碑），而非存活
+    const row = tables.notes.find((r) => r.id === "race-note");
+    expect(row).toBeDefined();
+    expect(row!.deleted_at).not.toBeNull();
+    // 删除意图已被后续轮次确认
+    expect(await db.outbox.get("note:race-note")).toBeUndefined();
   });
 });
 
