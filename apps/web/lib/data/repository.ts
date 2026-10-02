@@ -79,6 +79,8 @@ export interface NoteRepository {
   list(filters?: ListFilters): Promise<Paginated<Note>>;
   /** 侧栏树索引：全量笔记的轻量行（不含正文），容器内按手动顺序/创建时间排序 */
   listIndex(): Promise<NoteIndexItem[]>;
+  /** 按 id 取索引行（增量索引合并用；缺行的 id 静默跳过，如已删除） */
+  listIndexByIds(ids: string[]): Promise<NoteIndexItem[]>;
   /** 全量与分笔记本的笔记数量（侧边栏角标） */
   counts(): Promise<NoteCounts>;
   /** 拖拽落定：把笔记放到目标容器的第 index 位；跨容器即同时改分类（拖到别的笔记本） */
@@ -329,6 +331,26 @@ class IndexedDBNoteRepository implements NoteRepository {
     }));
     // 与 list() 相同的排序约定：容器内按手动顺序，未手动排序的按 置顶 + 创建时间升序
     return sortNotesForDisplay(items);
+  }
+
+  async listIndexByIds(ids: string[]): Promise<NoteIndexItem[]> {
+    if (ids.length === 0) return [];
+    const rows = await db.notes.bulkGet(ids);
+    const items: NoteIndexItem[] = [];
+    for (const n of rows) {
+      if (!n) continue; // 已删除：调用方（增量合并）按 delete 分支处理
+      items.push({
+        id: n.id,
+        title: n.title,
+        notebookId: n.notebookId,
+        tags: n.tags,
+        pinned: n.pinned,
+        createdAt: n.createdAt,
+        updatedAt: n.updatedAt,
+        sortOrder: n.sortOrder ?? null,
+      });
+    }
+    return items;
   }
 
   /** 容器内全部笔记（走 cat 派生索引：未分类为空串，与角标口径一致） */

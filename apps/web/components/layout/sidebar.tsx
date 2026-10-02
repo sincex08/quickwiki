@@ -2,6 +2,7 @@
 
 import {
   Fragment,
+  memo,
   useEffect,
   useMemo,
   useRef,
@@ -124,7 +125,7 @@ interface NoteRowActions {
  * - 菜单「上移 / 下移」：手机与键盘用户的主路径
  * - 菜单「恢复默认顺序」：仅在该容器已手动排序过时出现
  */
-function NoteRow({
+function NoteRowImpl({
   note,
   depth,
   index = 0,
@@ -278,6 +279,29 @@ function NoteRow({
     </div>
   );
 }
+
+/**
+ * memo：树行是重渲染热点（自动保存回读、拖拽、展开切换都触发整树重渲）。
+ * 比较器忽略 actions 里的回调与对象身份——闭包只捕获 store setter /
+ * note 本身，行为等价；note 引用变化（增量索引只替换变更行）才重渲染。
+ */
+const NoteRow = memo(
+  NoteRowImpl,
+  (prev, next) =>
+    prev.note === next.note &&
+    prev.depth === next.depth &&
+    prev.index === next.index &&
+    prev.canMoveUp === next.canMoveUp &&
+    prev.canMoveDown === next.canMoveDown &&
+    prev.manualOrder === next.manualOrder &&
+    prev.sortable === next.sortable &&
+    prev.actions.activeNoteId === next.actions.activeNoteId &&
+    prev.actions.pressedId === next.actions.pressedId &&
+    prev.actions.draggingId === next.actions.draggingId &&
+    prev.actions.dropTarget?.containerKey ===
+      next.actions.dropTarget?.containerKey &&
+    prev.actions.dropTarget?.index === next.actions.dropTarget?.index
+);
 
 /** 某节点下的笔记行列表：分页渲染 + 滚动到底自动加载 + 拖拽落点指示线 */
 function TreeNoteRows({

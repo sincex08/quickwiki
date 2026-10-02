@@ -1324,11 +1324,25 @@ async function pull(sb: SupabaseClient): Promise<void> {
     await sweepOrphanNotes();
     // 标签对账：以 notes.tags 为事实重建 noteTags/计数，修复历史分叉
     // （如旧版 push 回写覆盖 note.tags 后残留的孤儿计数）。幂等，无漂移零写入。
-    // 空 ids 事件是「踢订阅者刷新」语义，不走 batchEmit（其会早退空 ids）
-    if (await reconcileTags()) {
+    // 空 ids 事件是「踢订阅者刷新」语义，不走 batchEmit（其会早退空 ids）。
+    // 节流：对账要全表遍历（含正文反序列化），前台兜底同步每 60s 一轮，
+    // 千条笔记时不做节流会成为稳定的 CPU 心跳；漂移最迟 5 分钟后被下一窗捕获
+    if (await reconcileTagsThrottled()) {
       emitChange("tags", { type: "update", ids: [] });
     }
   });
+}
+
+const RECONCILE_LAST_KEY = "sync.lastReconcileTags";
+const RECONCILE_MIN_INTERVAL_MS = 5 * 60_000;
+
+async function reconcileTagsThrottled(): Promise<boolean> {
+  const lastMeta = await db.meta.get(RECONCILE_LAST_KEY);
+  const lastAt = typeof lastMeta?.value === "number" ? lastMeta.value : 0;
+  if (Date.now() - lastAt < RECONCILE_MIN_INTERVAL_MS) return false;
+  const changed = await reconcileTags();
+  await db.meta.put({ key: RECONCILE_LAST_KEY, value: Date.now() });
+  return changed;
 }
 
 /**

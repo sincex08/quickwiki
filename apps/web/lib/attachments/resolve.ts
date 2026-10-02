@@ -38,7 +38,13 @@ function evictOldest(): void {
 /** blob → objectURL 并纳入统一缓存；同 id 重复调用复用（不增加引用） */
 export function registerBlobUrl(id: string, blob: Blob): string {
   const existing = objectUrls.get(id);
-  if (existing) return existing.url;
+  if (existing) {
+    // 命中时重建插入序（真 LRU）：否则长期驻留的旧条目永不后移，
+    // 淘汰时按初始插入序误杀活跃条目
+    objectUrls.delete(id);
+    objectUrls.set(id, existing);
+    return existing.url;
+  }
   while (objectUrls.size >= MAX_CACHED_URLS) evictOldest();
   const url = URL.createObjectURL(blob);
   objectUrls.set(id, { url, refs: 0 });

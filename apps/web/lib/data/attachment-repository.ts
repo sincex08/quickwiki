@@ -66,6 +66,8 @@ export interface AttachmentRepository {
   getRecord(id: string): Promise<AttachmentRecord | null>;
   /** 含 blob（抽屉缩略图渲染用） */
   listRecordsByNote(noteId: string): Promise<AttachmentRecord[]>;
+  /** 仅元数据（blob 置空）：网格缩略图按 id 按需解析，避免整篇图片常驻内存 */
+  listMetaByNote(noteId: string): Promise<AttachmentRecord[]>;
 }
 
 function toMeta(record: AttachmentRecord): Attachment {
@@ -175,6 +177,13 @@ class IndexedDBAttachmentRepository implements AttachmentRepository {
       (a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)
     );
     return rows;
+  }
+
+  async listMetaByNote(noteId: string): Promise<AttachmentRecord[]> {
+    // 读行时 blob 仍会被反序列化（Dexie 无列裁剪），但映射后立即丢弃引用——
+    // 稳态内存里只剩元数据，几十张图的笔记不再有上百 MB 的 blob 常驻
+    const rows = await this.listRecordsByNote(noteId);
+    return rows.map((r) => ({ ...r, blob: undefined }));
   }
 }
 

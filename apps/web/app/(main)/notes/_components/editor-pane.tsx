@@ -781,9 +781,16 @@ export function EditorPane() {
   );
 }
 
-/** 字数状态条内容：useMemo 缓存全文统计，正文未变时父级重渲染零成本 */
+/** 字数状态条内容：统计延迟 500ms（三个全文 regex，逐键重算在长文上是
+ *  可感卡顿源）；超长正文给出拆分建议（编辑器对超大文档无分块防护） */
 function WordCountBar({ content }: { content: string }) {
-  const wc = useMemo(() => countWords(content), [content]);
+  const [deferred, setDeferred] = useState(content);
+  useEffect(() => {
+    const timer = setTimeout(() => setDeferred(content), 500);
+    return () => clearTimeout(timer);
+  }, [content]);
+  const wc = useMemo(() => countWords(deferred), [deferred]);
+  const large = content.length > 200_000;
   return (
     <span>
       {wc.total.toLocaleString()} 字
@@ -791,6 +798,11 @@ function WordCountBar({ content }: { content: string }) {
         {wc.chinese.toLocaleString()} 中文 · {wc.words.toLocaleString()} 英文词 ·{" "}
         {wc.chars.toLocaleString()} 字符
       </span>
+      {large && (
+        <span className="ml-2 text-amber-600 dark:text-amber-400">
+          文档较大，建议拆分为多篇（长文编辑与同步会变慢）
+        </span>
+      )}
     </span>
   );
 }

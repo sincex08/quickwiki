@@ -120,10 +120,11 @@ class SearchManager {
 
     if (indexEntry?.value) {
       try {
-        this.index = MiniSearch.loadJSON(
-          JSON.stringify(indexEntry.value),
-          miniSearchOptions
-        );
+        // 兼容两种持久化形态：新版存 JSON 字符串（省一半 structured clone
+        // 深拷贝成本），旧版存对象
+        const raw = indexEntry.value;
+        const json = typeof raw === "string" ? raw : JSON.stringify(raw);
+        this.index = MiniSearch.loadJSON(json, miniSearchOptions);
         this.indexedIds = this.readIndexedIds();
         await this.reconcile();
         await this.incrementalSync();
@@ -251,19 +252,28 @@ class SearchManager {
     this.indexedIds.add(note.id);
   }
 
+  /** 索引正文的截断上限：绝大多数查询命中在前部，超长尾部不进索引
+   *  （命中摘要仍读原文生成，不受影响） */
+  private static readonly CONTENT_INDEX_LIMIT = 50_000;
+
   private toDoc(note: Note): IndexedDoc {
     return {
       id: note.id,
       title: note.title,
-      content: markdownToText(note.content),
+      content: markdownToText(note.content).slice(
+        0,
+        SearchManager.CONTENT_INDEX_LIMIT
+      ),
     };
   }
 
   private async persist(): Promise<void> {
     if (this.stopped || !this.index) return;
     try {
+      // 存 JSON 字符串而非对象：IndexedDB 写入对象要走 structured clone
+      // 递归深拷贝，中文 bigram 索引体积可观时这是持久化的主要成本
       await db.meta.bulkPut([
-        { key: INDEX_META_KEY, value: this.index.toJSON() },
+        { key: INDEX_META_KEY, value: JSON.stringify(this.index.toJSON()) },
         { key: LAST_SYNC_META_KEY, value: this.lastSync },
       ]);
     } catch (err) {

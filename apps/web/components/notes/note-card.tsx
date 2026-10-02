@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { memo, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { formatDistanceToNowStrict } from "date-fns";
 import { zhCN } from "date-fns/locale";
 import { ArrowDown, ArrowUp, MoreHorizontal, Pin, RotateCcw, Trash2 } from "lucide-react";
@@ -42,7 +42,12 @@ interface NoteCardProps {
 /** 移动端左滑露出操作按钮的最大位移 */
 const SWIPE_REVEAL = 96;
 
-export function NoteCard({
+/**
+ * memo：列表是重渲染热点（拖拽/自动保存/切过滤都触发父级重渲）。
+ * 比较器忽略回调 prop——闭包只捕获 note 本身与 stable 的 store setter，
+ * 行为等价；note 引用变化（增量索引只替换变更行）时才真正重渲染。
+ */
+export const NoteCard = memo(function NoteCard({
   note,
   active,
   compact = false,
@@ -243,4 +248,15 @@ export function NoteCard({
       </div>
     </div>
   );
-}
+}, (prev, next) =>
+  prev.note === next.note &&
+  prev.active === next.active &&
+  prev.compact === next.compact &&
+  prev.sortable === next.sortable &&
+  prev.canMoveUp === next.canMoveUp &&
+  prev.canMoveDown === next.canMoveDown &&
+  prev.manualOrder === next.manualOrder &&
+  prev.dragIndex === next.dragIndex &&
+  prev.dragging === next.dragging &&
+  prev.pressed === next.pressed
+);

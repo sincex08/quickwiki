@@ -7,6 +7,7 @@ import {
   tagRepo,
 } from "@/lib/data/repository";
 import { attachmentRepo } from "@/lib/data/attachment-repository";
+import { noteIndexStore } from "@/lib/data/note-index-store";
 import type { AttachmentRecord } from "@/lib/db";
 import { subscribe } from "@/lib/events";
 import { debounce } from "@/lib/utils";
@@ -216,33 +217,68 @@ export function useNoteCounts() {
 }
 
 /**
- * 侧栏树索引：全量笔记的轻量行（不含正文），任何笔记变更后自动刷新。
- * 客户端按笔记本分组渲染，规模为本地库全量（千条级无压力）。
+ * 侧栏树索引：全量笔记的轻量行（不含正文）。
+ * 数据来自模块级增量缓存（note-index-store）：首次全量加载后按事件的
+ * ids 增量合并，未变更行保留对象引用（配合行组件 memo，打字自动保存
+ * 不再触发全表读 + 整树重渲染）。
  */
 export function useNotesIndex() {
-  const [items, setItems] = useState<NoteIndexItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [items, setItems] = useState<NoteIndexItem[]>(() =>
+    noteIndexStore.getSnapshot()
+  );
+  const [loading, setLoading] = useState(() => noteIndexStore.isLoading());
 
   useEffect(() => {
     let active = true;
-    const load = () => {
-      noteRepo.listIndex().then((list) => {
-        if (!active) return;
-        setItems(list);
-        setLoading(false);
-      });
-    };
-    const scheduleLoad = debounce(load, EVENT_MERGE_MS);
-    load();
-    const unsub = subscribe("notes", scheduleLoad);
+    const unsub = noteIndexStore.subscribe(() => {
+      if (!active) return;
+      setItems(noteIndexStore.getSnapshot());
+      setLoading(false);
+    });
     return () => {
       active = false;
-      scheduleLoad.cancel();
       unsub();
     };
   }, []);
 
   return { items, loading };
+}
+
+/**
+ * 某笔记的附件记录（**仅元数据**，不含 blob——网格缩略图按 id 经
+ * useAttachmentImgSrc 按需解析，几十张图的笔记不再把全部 blob 常驻内存）。
+ * 需要 blob 的操作（预览/下载）按 id 单独 getRecord。
+ */
+export function useAttachmentMetaRecords(noteId: string | null) {
+  const [records, setRecords] = useState<AttachmentRecord[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!noteId) {
+      setRecords([]);
+      setLoading(false);
+      return;
+    }
+    let active = true;
+    setLoading(true);
+    const load = () => {
+      attachmentRepo.listMetaByNote(noteId).then((list) => {
+        if (!active) return;
+        setRecords(list);
+        setLoading(false);
+      });
+    };
+    const scheduleLoad = debounce(load, EVENT_MERGE_MS);
+    load();
+    const unsub = subscribe("attachments", scheduleLoad);
+    return () => {
+      active = false;
+      scheduleLoad.cancel();
+      unsub();
+    };
+  }, [noteId]);
+
+  return { records, loading };
 }
 
 /**

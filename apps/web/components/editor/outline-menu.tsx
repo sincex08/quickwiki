@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import { ListTree } from "lucide-react";
 import {
   DropdownMenu,
@@ -68,7 +69,9 @@ function OutlineItems({
 }
 
 function useOutline(markdown: string): { headings: HeadingItem[]; empty: boolean } {
-  const headings = extractHeadings(markdown);
+  // useMemo：标题提取是全文逐行 regex，EditorPane 每次重渲染都重算
+  // 在长文上是稳定的 CPU 开销
+  const headings = useMemo(() => extractHeadings(markdown), [markdown]);
   return { headings, empty: headings.length === 0 };
 }
 

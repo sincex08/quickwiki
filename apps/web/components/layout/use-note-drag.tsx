@@ -290,8 +290,18 @@ export function useNoteDrag(
 
       const next = resolveTarget(e.clientX, e.clientY);
       if (next) {
-        dropRef.current = next;
-        setDropTarget(next);
+        // 落点未变不触发 setState：pointermove 每帧都发，新对象必然不等，
+        // 此前整棵侧栏/列表每帧重渲染；比较语义字段即可（指示线渲染不变）
+        const cur = dropRef.current;
+        const unchanged =
+          cur !== null &&
+          cur.containerKey === next.containerKey &&
+          cur.index === next.index &&
+          cur.notebookId === next.notebookId;
+        if (!unchanged) {
+          dropRef.current = next;
+          setDropTarget(next);
+        }
       }
     };
 

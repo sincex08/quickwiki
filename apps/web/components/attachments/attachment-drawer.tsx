@@ -35,7 +35,7 @@ import {
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { MiniSwitch } from "@/components/common/mini-switch";
 import { Lightbox } from "./lightbox";
-import { useAttachmentRecords } from "@/hooks/use-data";
+import { useAttachmentMetaRecords } from "@/hooks/use-data";
 import { useUIStore } from "@/stores/use-ui-store";
 import { useToastStore } from "@/stores/use-toast-store";
 import { attachmentRepo } from "@/lib/data/attachment-repository";
@@ -164,7 +164,8 @@ export function AttachmentDrawer({
   const open = useUIStore((s) => s.attachmentsDrawerOpen);
   const setOpen = useUIStore((s) => s.setAttachmentsDrawerOpen);
   const editorMode = useUIStore((s) => s.editorMode);
-  const { records, loading } = useAttachmentRecords(open ? note.id : null);
+  // 仅元数据：blob 按 id 在预览/下载时单独加载，避免整篇图片常驻内存
+  const { records, loading } = useAttachmentMetaRecords(open ? note.id : null);
   const toast = useToastStore((s) => s.show);
 
   const isMobile = useIsMobile();
@@ -225,12 +226,14 @@ export function AttachmentDrawer({
     setOpen(false);
   };
 
-  const download = (record: AttachmentRecord) => {
-    if (!record.blob) return;
-    const url = URL.createObjectURL(record.blob);
+  /** 下载：记录不含 blob（元数据模式），按 id 取完整记录后再落盘 */
+  const download = async (record: AttachmentRecord) => {
+    const full = record.blob ? record : await attachmentRepo.getRecord(record.id);
+    if (!full?.blob) return;
+    const url = URL.createObjectURL(full.blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = record.filename;
+    a.download = full.filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -264,32 +267,37 @@ export function AttachmentDrawer({
     setRenameTarget(null);
   };
 
-  // 预览 src：本地 blob 优先；缺 blob 时签发短时效签名 URL（私有桶，
-  // 异步获取），签发失败渲染占位等懒下载回填
+  // 预览 src：按 id 异步取完整记录，本地 blob 优先；缺 blob 时签发短时效
+  // 签名 URL（私有桶），签发失败渲染占位等懒下载回填
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   useEffect(() => {
     if (!preview) {
       setPreviewSrc(null);
       return;
     }
-    if (preview.blob) {
-      setPreviewSrc(registerBlobUrl(preview.id, preview.blob));
-      // 持有引用：防止 releaseAllObjectUrls（切换笔记）或 LRU 淘汰
-      // revoke 掉正在预览的 URL；关闭预览/换目标时配对释放
-      acquireObjectUrl(preview.id);
-      return () => releaseObjectUrl(preview.id);
-    }
     let active = true;
-    void attachmentSignedUrl(preview).then((url) => {
+    void (async () => {
+      const full = preview.blob
+        ? preview
+        : await attachmentRepo.getRecord(preview.id);
+      if (!active) return;
+      if (full?.blob) {
+        setPreviewSrc(registerBlobUrl(full.id, full.blob));
+        // 持有引用：防止 releaseAllObjectUrls（切换笔记）或 LRU 淘汰
+        // revoke 掉正在预览的 URL；关闭预览/换目标时配对释放
+        acquireObjectUrl(full.id);
+        return;
+      }
+      const url = await attachmentSignedUrl(full ?? preview);
       if (active) setPreviewSrc(url);
-    });
+    })();
     return () => {
       active = false;
+      releaseObjectUrl(preview.id);
     };
-    // 按 id + blob 身份触发即可；依赖 preview 对象引用会在 records 刷新
-    // （新对象实例）时不必要地重复签名
+    // 按 id 触发（元数据记录的 blob 恒为空，依赖对象引用无意义）
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [preview?.id, preview?.blob]);
+  }, [preview?.id]);
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>
@@ -338,9 +346,9 @@ export function AttachmentDrawer({
                 <DropdownMenuItem
                   disabled={records.length === 0}
                   onClick={() => {
-                    const withBlob = records.filter((r) => r.blob);
-                    if (withBlob.length === 0) return;
-                    withBlob.forEach((r) => download(r));
+                    void (async () => {
+                      for (const r of records) await download(r);
+                    })();
                   }}
                 >
                   <Download className="mr-2 h-4 w-4" />
@@ -499,10 +507,7 @@ export function AttachmentDrawer({
                             <ImagePlus className="mr-2 h-4 w-4" />
                             插入正文
                           </DropdownMenuItem>
-                          <DropdownMenuItem
-                            disabled={!record.blob}
-                            onClick={() => download(record)}
-                          >
+                          <DropdownMenuItem onClick={() => void download(record)}>
                             <Download className="mr-2 h-4 w-4" />
                             下载
                           </DropdownMenuItem>
