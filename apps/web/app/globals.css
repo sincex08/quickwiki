@@ -89,6 +89,16 @@
   .pt-safe {
     padding-top: env(safe-area-inset-top);
   }
+
+  /* ===== 触屏树行高 =====
+     粗指针（无鼠标悬停能力）设备上侧栏行高加大到 40px，
+     命中更稳（44px 触控指南的折中，行内已有 4px 纵向呼吸）。
+     桌面鼠标设备保持 32px 密度不变。 */
+  @media (pointer: coarse) {
+    .tree-row {
+      min-height: 2.5rem;
+    }
+  }
 }
 
 /* ===== Tiptap 编辑器样式 ===== */

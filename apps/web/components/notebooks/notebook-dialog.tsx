@@ -27,6 +27,8 @@ interface NotebookDialogProps {
   initialColor: string;
   /** 编辑时的当前父级；新建时的默认父级（null = 顶层） */
   initialParentId?: string | null;
+  /** 新建成功回调（拿到新笔记本 id）：调用方用它切入新作用域等 */
+  onCreated?: (id: string) => void;
 }
 
 /** 新建/编辑笔记本对话框（含父级选择：支持先建容器再建，也可直接选父级） */
@@ -37,6 +39,7 @@ export function NotebookDialog({
   initialName,
   initialColor,
   initialParentId = null,
+  onCreated,
 }: NotebookDialogProps) {
   const [name, setName] = useState(initialName);
   const [color, setColor] = useState(initialColor);
@@ -108,11 +111,12 @@ export function NotebookDialog({
           parentId: nextParent,
         });
       } else {
-        await notebookRepo.create({
+        const id = await notebookRepo.create({
           name: name.trim(),
           color,
           parentId: nextParent,
         });
+        onCreated?.(id);
       }
       onOpenChange(false);
     } catch (e) {

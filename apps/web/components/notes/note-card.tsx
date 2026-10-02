@@ -183,7 +183,7 @@ export function NoteCard({
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuItem onClick={onTogglePin}>
-                <Pin className={cn("mr-2 h-4 w-4", note.pinned && "fill-primary text-primary")} />
+                <Pin className={cn("mr-2 h-4 w-4", note.pinned && "fill-amber-500 text-amber-500 dark:fill-amber-400 dark:text-amber-400")} />
                 {note.pinned ? "取消置顶" : "置顶"}
               </DropdownMenuItem>
               {sortable && (
@@ -216,14 +216,14 @@ export function NoteCard({
         </div>
         <div className="flex items-start gap-1.5">
           {note.pinned && (
-            <Pin className="mt-1 h-3.5 w-3.5 shrink-0 fill-primary text-primary" />
+            <Pin className="mt-1 h-3.5 w-3.5 shrink-0 fill-amber-500 text-amber-500 dark:fill-amber-400 dark:text-amber-400" />
           )}
           <h3 className="line-clamp-1 flex-1 text-sm font-medium">
             {note.title}
           </h3>
         </div>
         {snippet && (
-          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+          <p className="mt-1 line-clamp-2 text-[13px] text-muted-foreground">
             {snippet}
           </p>
         )}

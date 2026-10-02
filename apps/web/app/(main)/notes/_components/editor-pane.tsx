@@ -56,9 +56,18 @@ import { OutlineMenuButton, OutlineSubmenu } from "@/components/editor/outline-m
  */
 const PANE_PX = "px-4 md:px-6 lg:px-8";
 
+/**
+ * 文档列宽约束（C1）：标题 / 标签 / 三种模式的正文统一限制在 max-w-3xl 并居中。
+ * 宽屏下行长回到中文舒适区间（约 60+ 字/行），三者的左边缘对齐关系保持不变
+ * （三者内边距一致）；窄于列宽时回退为全宽，移动端零变化。
+ */
+const DOC_COL = "mx-auto w-full max-w-3xl";
+
 export function EditorPane() {
   const activeNoteId = useUIStore((s) => s.activeNoteId);
   const openNote = useUIStore((s) => s.openNote);
+  const notebookFilter = useUIStore((s) => s.notebookFilter);
+  const setNotebookFilter = useUIStore((s) => s.setNotebookFilter);
   const editorMode = useUIStore((s) => s.editorMode);
   const setEditorMode = useUIStore((s) => s.setEditorMode);
   const hybridEditing = useUIStore((s) => s.hybridEditing);
@@ -117,6 +126,16 @@ export function EditorPane() {
       openNote(null);
     }
   }, [activeNoteId, loaded, note, openNote]);
+
+  /**
+   * 深链 / 启动页直接新建：笔记已打开但位置仍是「未选择」时，作用域跟随
+   * 该笔记所属笔记本（与搜索跳转、最近编辑同规则），左侧栏切到正确的树。
+   * 仅在 null 时补 —— 不覆盖用户显式切换的位置（可能故意在别处浏览）。
+   */
+  useEffect(() => {
+    if (!note || notebookFilter !== null) return;
+    setNotebookFilter(note.notebookId ?? "none");
+  }, [note, notebookFilter, setNotebookFilter]);
 
   const flushPending = () => {
     if (pendingRef.current) {
@@ -363,7 +382,7 @@ export function EditorPane() {
     // 仍在加载中（loaded=false）：骨架占位代替纯白，移动端重挂载回读
     // IndexedDB 的间隙不再闪一帧空白
     return (
-      <div className={cn("flex h-full flex-col", PANE_PX)}>
+      <div className={cn("flex h-full flex-col", PANE_PX, DOC_COL)}>
         <div className="flex shrink-0 items-center gap-2 border-b py-2">
           <Skeleton className="h-3 w-24" />
         </div>
@@ -400,10 +419,11 @@ export function EditorPane() {
     <div className="flex h-full min-h-0 flex-col">
       {/* 编辑器头部：移动端仅保留「返回 + 状态 + 主操作」，其余收进「…」菜单 */}
       <div className={cn("flex shrink-0 items-center gap-1.5 border-b py-2 md:gap-2", PANE_PX)}>
+        {/* 返回卡片列表：桌面 / 移动同一心智（作用域模型下主区即列表） */}
         <Button
           variant="ghost"
           size="icon"
-          className="shrink-0 md:hidden"
+          className="shrink-0"
           onClick={() => openNote(null)}
           aria-label="返回列表"
           title="返回列表"
@@ -451,7 +471,7 @@ export function EditorPane() {
               本页附件
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => togglePin(note.id, note.pinned)}>
-              <Pin className={note.pinned ? "mr-2 h-4 w-4 fill-primary text-primary" : "mr-2 h-4 w-4"} />
+              <Pin className={note.pinned ? "mr-2 h-4 w-4 fill-amber-500 text-amber-500 dark:fill-amber-400 dark:text-amber-400" : "mr-2 h-4 w-4"} />
               {note.pinned ? "取消置顶" : "置顶"}
             </DropdownMenuItem>
             <OutlineSubmenu markdown={latestContent} onNavigate={() => {}} />
@@ -559,7 +579,7 @@ export function EditorPane() {
           aria-label={note.pinned ? "取消置顶" : "置顶"}
           title={note.pinned ? "取消置顶" : "置顶（列表优先显示）"}
         >
-          <Pin className={note.pinned ? "h-4 w-4 fill-primary text-primary" : "h-4 w-4"} />
+          <Pin className={note.pinned ? "h-4 w-4 fill-amber-500 text-amber-500 dark:fill-amber-400 dark:text-amber-400" : "h-4 w-4"} />
         </Button>
 
         {/* 大纲（标题跳转，三模式通用） */}
@@ -614,7 +634,7 @@ export function EditorPane() {
       </div>
 
       {/* 标题行：可编辑；留空回退自动提取 */}
-      <div className={cn("flex shrink-0 items-center gap-2 border-b py-1.5", PANE_PX)}>
+      <div className={cn("flex shrink-0 items-center gap-2 border-b py-1.5", PANE_PX, DOC_COL)}>
         <input
           value={titleDraft}
           onChange={(e) => handleTitleChange(e.target.value)}
@@ -644,7 +664,7 @@ export function EditorPane() {
 
       {/* 标签：无标签时折叠为入口按钮，避免常驻空行占位 */}
       {note.tags.length > 0 || tagsOpen ? (
-        <div className={cn("flex shrink-0 items-center border-b py-1.5", PANE_PX)}>
+        <div className={cn("flex shrink-0 items-center border-b py-1.5", PANE_PX, DOC_COL)}>
           <TagEditor
             tags={note.tags}
             onChange={(tags) => void noteRepo.update(note.id, { tags })}
@@ -653,7 +673,7 @@ export function EditorPane() {
           />
         </div>
       ) : (
-        <div className={cn("flex shrink-0 items-center border-b py-1", PANE_PX)}>
+        <div className={cn("flex shrink-0 items-center border-b py-1", PANE_PX, DOC_COL)}>
           <button
             type="button"
             onClick={() => setTagsOpen(true)}
@@ -666,17 +686,19 @@ export function EditorPane() {
         </div>
       )}
 
-      {/* 编辑 / 源码 / 预览（块级混合编辑） */}
+      {/* 编辑 / 源码 / 预览（块级混合编辑）：文档列内保持统一的行宽 */}
       {editorMode === "preview" ? (
         // key 与另两个模式对齐：切换笔记时重挂，blocks 重新初始化（内部块草稿不跨笔记残留）
-        <HybridPreview
-          key={note.id}
-          content={latestContent}
-          onChange={handleChange}
-          editable={hybridEditing}
-        />
+        <div className={cn("flex min-h-0 flex-1 flex-col", DOC_COL)}>
+          <HybridPreview
+            key={note.id}
+            content={latestContent}
+            onChange={handleChange}
+            editable={hybridEditing}
+          />
+        </div>
       ) : editorMode === "source" ? (
-        <div className="min-h-0 flex-1">
+        <div className={cn("flex min-h-0 flex-1 flex-col", DOC_COL)}>
           {/* key 确保切换笔记时重挂载；sourceNonce 供抽屉等外部改写后刷新内容 */}
           <MarkdownSource
             key={`${note.id}:${sourceNonce}`}
@@ -685,13 +707,15 @@ export function EditorPane() {
           />
         </div>
       ) : (
-        <LazyEditor
-          key={note.id}
-          content={latestContent}
-          onChange={handleChange}
-          showToolbar
-          autofocus
-        />
+        <div className={cn("flex min-h-0 flex-1 flex-col", DOC_COL)}>
+          <LazyEditor
+            key={note.id}
+            content={latestContent}
+            onChange={handleChange}
+            showToolbar
+            autofocus
+          />
+        </div>
       )}
 
       {/* 字数状态条（三模式通用；移动端收起以省空间）。
@@ -700,7 +724,8 @@ export function EditorPane() {
       <div
         className={cn(
           "hidden shrink-0 items-center justify-end border-t pt-0.5 pb-[calc(0.125rem+env(safe-area-inset-bottom))] text-[11px] text-muted-foreground md:flex",
-          PANE_PX
+          PANE_PX,
+          DOC_COL
         )}
       >
         <WordCountBar content={latestContent} />
