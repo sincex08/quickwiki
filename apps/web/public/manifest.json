@@ -1,7 +1,7 @@
 {
   "name": "QuickWiki",
   "short_name": "QuickWiki",
-  "description": "本地优先的个人知识库与快速记录工具",
+  "description": "个人知识库与快速记录工具，数据多端自动同步",
   "id": "/",
   "start_url": "/",
   "scope": "/",

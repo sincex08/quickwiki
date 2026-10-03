@@ -217,7 +217,7 @@ export function FeaturesDialog({ open, onOpenChange }: FeaturesDialogProps) {
         <DialogHeader className="shrink-0 pr-8">
           <DialogTitle>QuickWiki 功能清单</DialogTitle>
           <p className="text-xs text-muted-foreground">
-            本地优先的 Markdown 笔记 · 数据存储在浏览器，可完整导出 · 更新于 2026-10-02
+            Markdown 笔记 · 数据存储在浏览器，可完整导出 · 多端自动同步 · 更新于 2026-10-03
           </p>
         </DialogHeader>
 

@@ -5,8 +5,8 @@ import { ServiceWorkerRegister } from "@/components/sw-register";
 import { SyncBootstrap } from "@/components/sync-bootstrap";
 
 export const metadata: Metadata = {
-  title: "QuickWiki - 本地优先笔记",
-  description: "本地优先的个人知识库与快速记录工具",
+  title: "QuickWiki - 个人知识库",
+  description: "个人知识库与快速记录工具，数据多端自动同步",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
